@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 测试文件
+test_generate.py
+
+# 生成的图片
+md_pic/
+
+# 备份文件
+bak/
+*.bak
+
+# 配置文件（包含敏感信息如API密钥）
+config.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db

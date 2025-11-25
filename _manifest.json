@@ -1,0 +1,44 @@
+{
+  "manifest_version": 1,
+  "name": "MaiBot_LLM2pic",
+  "version": "1.0.0",
+  "description": "使用LLM根据聊天记录和人设生成提示词的图片生成插件，适配自然语言生图模型",
+  "author": {
+    "name": "CharTyr",
+    "url": "https://github.com/CharTyr/MaiBot_LLM2pic"
+  },
+  "license": "MIT",
+  
+  "host_application": {
+    "min_version": "0.11.0",
+    "max_version": "0.12.x"
+  },
+  "homepage_url": "https://github.com/CharTyr/MaiBot_LLM2pic",
+  "repository_url": "https://github.com/CharTyr/MaiBot_LLM2pic",
+  "keywords": ["draw", "image", "ai", "llm", "gpt-image", "grok"],
+  "categories": ["Expression", "Picture"],
+  
+  "default_locale": "zh-CN",
+  "locales_path": "_locales",
+  
+  "plugin_info": {
+    "is_built_in": false,
+    "plugin_type": "image_generator",
+    "components": [
+      {
+        "type": "action",
+        "name": "custom_pic_action",
+        "description": "使用LLM生成提示词并生成图片",
+        "activation_modes": ["llm_judge"],
+        "keywords": []
+      }
+    ],
+    "features": [
+      "LLM智能生成提示词",
+      "支持自然语言生图模型",
+      "可自定义系统提示词",
+      "图片裁切去水印",
+      "兼容OpenAI API格式"
+    ]
+  }
+}
