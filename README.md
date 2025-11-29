@@ -437,7 +437,7 @@ gradio_timeout = 180
 
 ## 更新日志
 
-### [3.0.0] - 2024-11-29
+### [3.0.0] - 2025-11-29
 
 #### 新增功能
 - ✨ **Gradio API 支持**：新增对 Gradio 格式 API 的支持，可以调用 HuggingFace Space 上的图片生成模型
@@ -573,7 +573,7 @@ MaiBot_LLM2pic/
 
 ## 作者
 
-Ptrel
+CharTyr
 
 ## 贡献
 
