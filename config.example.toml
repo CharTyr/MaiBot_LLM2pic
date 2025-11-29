@@ -1,64 +1,54 @@
-# MaiBot_LLM2pic - 配置文件示例
-# 使用LLM根据聊天记录和人设生成提示词的图片生成插件
-# 适配 OpenAI gpt-image、Grok grok-2-image 等自然语言生图模型
-# 配置版本: 3.0.0
-#
-# 使用方法：复制此文件为 config.toml 并填入你的配置
+# MaiBot_LLM2pic 插件配置示例
 
-# 插件基本配置
 [plugin]
-
-# 是否启用插件
 enabled = true
 
-
-# 图片生成API配置
+# ===== API配置 =====
 [api]
+# API类型：
+# - "openai": OpenAI兼容格式（如OpenAI、Grok等）
+# - "gradio": Gradio格式（如HuggingFace Space）
+api_type = "gradio"
 
-# 图片生成API的基础URL（兼容OpenAI格式）
-base_url = "https://api.openai.com/v1"
+# API基础URL
+# OpenAI示例: "https://api.openai.com/v1"
+# Gradio示例: "https://tongyi-mai-z-image-turbo.hf.space"
+base_url = "https://tongyi-mai-z-image-turbo.hf.space"
 
-# 图片生成API密钥 (必需)
-api_key = "YOUR_API_KEY_HERE"
+# API密钥（Gradio API通常不需要，可留空）
+api_key = ""
 
-
-# 图片生成参数配置
+# ===== 图片生成参数 =====
 [generation]
-
-# 图片生成模型（如 gpt-image-1, grok-2-image 等自然语言生图模型）
+# OpenAI格式使用的模型（仅当api_type="openai"时生效）
 default_model = "gpt-image-1"
 
-# 图片尺寸（留空则由生图模型自动决定）
+# OpenAI格式的图片尺寸（仅当api_type="openai"时生效，留空则由模型决定）
 default_size = ""
-
-# 是否启用图片裁切（用于去除AI生成的水印）
-crop_enabled = false
-
-# 裁切位置：top（顶部）、bottom（底部）、left（左侧）、right（右侧）
-crop_position = "bottom"
-
-# 裁切像素数
-crop_pixels = 40
 
 # 全局附加提示词（会添加到LLM生成的提示词前面，可留空）
 custom_prompt_add = ""
 
+# 图片裁切设置（用于去除AI生成的水印）
+crop_enabled = false
+crop_position = "bottom"  # top, bottom, left, right
+crop_pixels = 40
 
-# LLM模型配置（用于生成提示词）
+# Gradio API 专用参数（仅当api_type="gradio"时生效）
+gradio_resolution = "1024x1024 ( 1:1 )"  # 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )" 等
+gradio_steps = 8          # 推理步数，越大质量越好但速度越慢
+gradio_shift = 3          # 时间偏移参数
+gradio_timeout = 120      # 轮询超时时间（秒）
+
+# ===== LLM配置（用于生成提示词）=====
 [llm]
-
-# 用于生成提示词的LLM模型名称
-# 留空则使用系统默认的planner模型
+# 用于生成提示词的LLM模型名称（留空则使用系统默认的planner模型）
 model_name = ""
 
 # 调用LLM生成提示词时的系统提示词（留空则使用默认提示词）
 # 支持 {persona} 占位符用于插入人设信息
-# 此提示词与MaiBot主程序完全隔离，仅在本插件调用LLM时使用
 system_prompt = ""
 
-
-# 组件启用配置
+# ===== 组件配置 =====
 [components]
-
-# 是否启用图片生成Action
 enable_image_generation = true

@@ -22,7 +22,9 @@ from src.plugin_system import (
     llm_api,
     message_api,
 )
-from src.plugin_system.base.component_types import ChatMode
+from src.plugin_system.base.component_types import ChatMode, CommandInfo
+from src.plugin_system.base.base_command import BaseCommand
+from src.chat.message_receive.message import MessageRecv
 from src.config.config import global_config, model_config
 from src.common.logger import get_logger
 
@@ -196,16 +198,20 @@ class CustomPicAction(BaseAction):
         logger.info(f"{self.log_prefix} 执行图片生成动作")
 
         # 配置验证
+        api_type = self.get_config("api.api_type", "openai")
         http_base_url = self.get_config("api.base_url")
-        http_api_key = self.get_config("api.api_key")
+        http_api_key = self.get_config("api.api_key", "")
 
-        if not (http_base_url and http_api_key):
-            logger.error(f"{self.log_prefix} HTTP配置缺失: 图片生成功能所需的API配置不完整")
-            return False, "HTTP配置不完整"
+        # 检查 base_url 是否配置
+        if not http_base_url:
+            logger.error(f"{self.log_prefix} API配置缺失: base_url 未配置")
+            return False, "API base_url 未配置"
 
-        if http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
-            logger.error(f"{self.log_prefix} API密钥未配置")
-            return False, "API密钥未配置"
+        # OpenAI 格式需要检查 api_key，Gradio 格式不需要
+        if api_type.lower() != "gradio":
+            if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
+                logger.error(f"{self.log_prefix} API密钥未配置")
+                return False, "API密钥未配置"
         
         # 获取用户请求
         original_description = self.action_data.get("description", "")
@@ -257,16 +263,23 @@ class CustomPicAction(BaseAction):
         logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
 
         # 获取图片生成配置
+        api_type = self.get_config("api.api_type", "openai")
         default_model = self.get_config("generation.default_model", "gpt-image-1")
         image_size = self.get_config("generation.default_size", "")
 
         try:
-            success, result = await asyncio.to_thread(
-                self._make_http_image_request,
-                prompt=final_prompt,
-                model=default_model,
-                size=image_size if image_size else None,
-            )
+            if api_type.lower() == "gradio":
+                success, result = await asyncio.to_thread(
+                    self._make_gradio_image_request,
+                    prompt=final_prompt,
+                )
+            else:
+                success, result = await asyncio.to_thread(
+                    self._make_http_image_request,
+                    prompt=final_prompt,
+                    model=default_model,
+                    size=image_size if image_size else None,
+                )
         except Exception as e:
             logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
             success = False
@@ -281,15 +294,22 @@ class CustomPicAction(BaseAction):
     async def _get_recent_chat_messages(self) -> str:
         """获取最近的聊天记录"""
         try:
-            # 获取最近30分钟的消息，最多20条
+            # 从配置获取参数
+            message_limit = self.get_config("llm.context_message_limit", 20)
+            time_minutes = self.get_config("llm.context_time_minutes", 30)
+            
+            # 限制范围
+            message_limit = max(1, min(100, message_limit))
+            time_minutes = max(1, min(1440, time_minutes))  # 最多24小时
+            
             end_time = time.time()
-            start_time = end_time - 30 * 60  # 30分钟前
+            start_time = end_time - time_minutes * 60
             
             messages = message_api.get_messages_by_time_in_chat(
                 chat_id=self.chat_id,
                 start_time=start_time,
                 end_time=end_time,
-                limit=20,
+                limit=message_limit,
                 limit_mode="latest",
                 filter_mai=False,
                 filter_command=True,
@@ -507,6 +527,106 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} 图片裁切失败: {e}", exc_info=True)
             return image_bytes
 
+    def _make_gradio_image_request(self, prompt: str) -> Tuple[bool, str]:
+        """发送Gradio API请求生成图片（如HuggingFace Space）"""
+        base_url = self.get_config("api.base_url", "")
+        resolution = self.get_config("generation.gradio_resolution", "1024x1024 ( 1:1 )")
+        steps = self.get_config("generation.gradio_steps", 8)
+        shift = self.get_config("generation.gradio_shift", 3)
+        timeout = self.get_config("generation.gradio_timeout", 120)
+        
+        # 第一步：POST 请求获取 event_id
+        endpoint = f"{base_url.rstrip('/')}/gradio_api/call/generate"
+        
+        payload = {
+            "data": [
+                prompt,           # [0] prompt
+                resolution,       # [1] resolution
+                42,              # [2] seed (固定值，因为会使用random_seed=true)
+                steps,           # [3] steps
+                shift,           # [4] shift
+                True,            # [5] random_seed
+                []               # [6] gallery_images
+            ]
+        }
+        
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        logger.info(f"{self.log_prefix} 发起Gradio图片请求, Prompt: {prompt[:100]}...")
+        
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        
+        try:
+            # 获取 event_id
+            with urllib.request.urlopen(req, timeout=30) as response:
+                response_body = response.read().decode("utf-8")
+                
+                if 200 <= response.status < 300:
+                    response_data = json.loads(response_body)
+                    event_id = response_data.get("event_id")
+                    
+                    if not event_id:
+                        return False, "未获取到event_id"
+                    
+                    logger.info(f"{self.log_prefix} 获取到event_id: {event_id}")
+                else:
+                    return False, f"POST请求失败 (状态码 {response.status})"
+            
+            # 第二步：GET 请求轮询结果
+            result_endpoint = f"{base_url.rstrip('/')}/gradio_api/call/generate/{event_id}"
+            
+            import time
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                try:
+                    result_req = urllib.request.Request(result_endpoint, method="GET")
+                    with urllib.request.urlopen(result_req, timeout=30) as result_response:
+                        result_body = result_response.read().decode("utf-8")
+                        
+                        # 解析 SSE 格式的响应
+                        for line in result_body.split('\n'):
+                            if line.startswith('event: complete'):
+                                # 下一行是数据
+                                continue
+                            elif line.startswith('data: '):
+                                data_str = line[6:]  # 去掉 "data: " 前缀
+                                try:
+                                    result_data = json.loads(data_str)
+                                    
+                                    # 提取图片URL
+                                    # 格式: [[{"image": {"url": "..."}, ...}], seed_str, seed_int]
+                                    if isinstance(result_data, list) and len(result_data) > 0:
+                                        gallery = result_data[0]
+                                        if isinstance(gallery, list) and len(gallery) > 0:
+                                            first_image = gallery[0]
+                                            if isinstance(first_image, dict):
+                                                image_data = first_image.get("image", {})
+                                                image_url = image_data.get("url")
+                                                
+                                                if image_url:
+                                                    logger.info(f"{self.log_prefix} 获取到图片URL")
+                                                    return True, image_url
+                                
+                                except json.JSONDecodeError:
+                                    continue
+                        
+                        # 如果没有找到complete事件，等待后重试
+                        time.sleep(2)
+                        
+                except Exception as e:
+                    logger.debug(f"{self.log_prefix} 轮询中: {e}")
+                    time.sleep(2)
+            
+            return False, f"轮询超时（{timeout}秒）"
+            
+        except Exception as e:
+            logger.error(f"{self.log_prefix} Gradio API请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
     def _make_http_image_request(
         self, prompt: str, model: str, size: Optional[str] = None
     ) -> Tuple[bool, str]:
@@ -574,6 +694,338 @@ class CustomPicAction(BaseAction):
             return False, str(e)
 
 
+# ===== Command组件 =====
+
+class DirectPicCommand(BaseCommand):
+    """直接生成图片的指令，跳过LLM提示词生成"""
+
+    command_name = "direct_pic"
+    command_description = "直接使用提供的prompt生成图片，不经过LLM处理"
+    command_pattern = r"^/pic\s+(?P<prompt>.+)$"
+
+    def __init__(self, message: MessageRecv, plugin_config: Optional[dict] = None):
+        super().__init__(message, plugin_config)
+        self.log_prefix = "[DirectPic]"
+
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
+        """执行直接图片生成"""
+        # 获取用户输入的prompt
+        prompt = self.matched_groups.get("prompt", "").strip()
+        
+        if not prompt:
+            await self.send_text("请提供图片描述，例如: /pic a cute cat")
+            return True, None, True
+        
+        logger.info(f"{self.log_prefix} 收到直接生图指令，prompt: {prompt[:100]}...")
+        
+        # 配置验证
+        api_type = self.get_config("api.api_type", "openai")
+        http_base_url = self.get_config("api.base_url")
+        http_api_key = self.get_config("api.api_key", "")
+
+        if not http_base_url:
+            await self.send_text("API配置错误：base_url 未配置")
+            return False, None, True
+
+        if api_type.lower() != "gradio":
+            if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
+                await self.send_text("API配置错误：api_key 未配置")
+                return False, None, True
+
+        # 添加全局附加提示词
+        custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
+        if custom_prompt_add and custom_prompt_add.strip():
+            final_prompt = f"{custom_prompt_add.strip()}, {prompt}"
+        else:
+            final_prompt = prompt
+        
+        logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
+
+        # 获取图片生成配置
+        default_model = self.get_config("generation.default_model", "gpt-image-1")
+        image_size = self.get_config("generation.default_size", "")
+
+        try:
+            if api_type.lower() == "gradio":
+                success, result = await asyncio.to_thread(
+                    self._make_gradio_image_request,
+                    prompt=final_prompt,
+                )
+            else:
+                success, result = await asyncio.to_thread(
+                    self._make_http_image_request,
+                    prompt=final_prompt,
+                    model=default_model,
+                    size=image_size if image_size else None,
+                )
+        except Exception as e:
+            logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
+            await self.send_text(f"图片生成失败: {str(e)[:100]}")
+            return False, None, True
+
+        if success:
+            return await self._handle_image_result(result)
+        else:
+            logger.error(f"{self.log_prefix} 图片生成失败: {result}")
+            await self.send_text(f"图片生成失败: {result}")
+            return False, None, True
+
+    async def _handle_image_result(self, result: str) -> Tuple[bool, Optional[str], bool]:
+        """处理图片生成结果"""
+        # 检查是否是Base64数据
+        if result.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+            # 检查是否需要裁切
+            crop_enabled = self.get_config("generation.crop_enabled", False)
+            if crop_enabled:
+                try:
+                    image_bytes = base64.b64decode(result)
+                    image_bytes = self._crop_image(image_bytes)
+                    result = base64.b64encode(image_bytes).decode("utf-8")
+                except Exception as e:
+                    logger.error(f"{self.log_prefix} Base64图片裁切失败: {e}")
+            
+            send_success = await self.send_image(result)
+            if send_success:
+                logger.info(f"{self.log_prefix} 图片已发送")
+                return True, None, True
+            else:
+                logger.error(f"{self.log_prefix} 图片生成成功但发送失败")
+                await self.send_text("图片发送失败")
+                return False, None, True
+        else:
+            # 是URL，需要下载
+            image_url = result
+            logger.info(f"{self.log_prefix} 下载图片: {image_url[:70]}...")
+            
+            try:
+                encode_success, encode_result = await asyncio.to_thread(
+                    self._download_and_encode_base64, image_url
+                )
+            except Exception as e:
+                logger.error(f"{self.log_prefix} 下载图片失败: {e!r}", exc_info=True)
+                encode_success = False
+                encode_result = str(e)
+
+            if encode_success:
+                send_success = await self.send_image(encode_result)
+                if send_success:
+                    logger.info(f"{self.log_prefix} 图片已发送")
+                    return True, None, True
+                else:
+                    logger.error(f"{self.log_prefix} 图片下载成功但发送失败")
+                    await self.send_text("图片发送失败")
+                    return False, None, True
+            else:
+                logger.error(f"{self.log_prefix} 下载图片失败: {encode_result}")
+                await self.send_text(f"图片下载失败: {encode_result}")
+                return False, None, True
+
+    def _download_and_encode_base64(self, image_url: str) -> Tuple[bool, str]:
+        """下载图片并编码为Base64"""
+        try:
+            with urllib.request.urlopen(image_url, timeout=60) as response:
+                if response.status == 200:
+                    image_bytes = response.read()
+                    
+                    crop_enabled = self.get_config("generation.crop_enabled", False)
+                    if crop_enabled:
+                        image_bytes = self._crop_image(image_bytes)
+                    
+                    base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+                    return True, base64_encoded
+                else:
+                    return False, f"下载失败 (状态: {response.status})"
+        except Exception as e:
+            logger.error(f"{self.log_prefix} 下载图片错误: {e!r}", exc_info=True)
+            return False, str(e)
+
+    def _crop_image(self, image_bytes: bytes) -> bytes:
+        """根据配置裁切图片"""
+        try:
+            from io import BytesIO
+            from PIL import Image
+            
+            crop_position = self.get_config("generation.crop_position", "bottom")
+            crop_pixels = self.get_config("generation.crop_pixels", 40)
+            
+            img = Image.open(BytesIO(image_bytes))
+            width, height = img.size
+            
+            if crop_position == "bottom":
+                if crop_pixels >= height:
+                    return image_bytes
+                crop_box = (0, 0, width, height - crop_pixels)
+            elif crop_position == "top":
+                if crop_pixels >= height:
+                    return image_bytes
+                crop_box = (0, crop_pixels, width, height)
+            elif crop_position == "left":
+                if crop_pixels >= width:
+                    return image_bytes
+                crop_box = (crop_pixels, 0, width, height)
+            elif crop_position == "right":
+                if crop_pixels >= width:
+                    return image_bytes
+                crop_box = (0, 0, width - crop_pixels, height)
+            else:
+                return image_bytes
+            
+            cropped_img = img.crop(crop_box)
+            output = BytesIO()
+            img_format = img.format or 'PNG'
+            cropped_img.save(output, format=img_format)
+            
+            logger.info(f"{self.log_prefix} 已裁切图片{crop_position} {crop_pixels} 像素")
+            return output.getvalue()
+            
+        except ImportError:
+            return image_bytes
+        except Exception as e:
+            logger.error(f"{self.log_prefix} 图片裁切失败: {e}", exc_info=True)
+            return image_bytes
+
+    def _make_gradio_image_request(self, prompt: str) -> Tuple[bool, str]:
+        """发送Gradio API请求生成图片"""
+        base_url = self.get_config("api.base_url", "")
+        resolution = self.get_config("generation.gradio_resolution", "1024x1024 ( 1:1 )")
+        steps = self.get_config("generation.gradio_steps", 8)
+        shift = self.get_config("generation.gradio_shift", 3)
+        timeout = self.get_config("generation.gradio_timeout", 120)
+        
+        endpoint = f"{base_url.rstrip('/')}/gradio_api/call/generate"
+        
+        payload = {
+            "data": [prompt, resolution, 42, steps, shift, True, []]
+        }
+        
+        data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        
+        logger.info(f"{self.log_prefix} 发起Gradio图片请求, Prompt: {prompt[:100]}...")
+        
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                response_body = response.read().decode("utf-8")
+                
+                if 200 <= response.status < 300:
+                    response_data = json.loads(response_body)
+                    event_id = response_data.get("event_id")
+                    
+                    if not event_id:
+                        return False, "未获取到event_id"
+                    
+                    logger.info(f"{self.log_prefix} 获取到event_id: {event_id}")
+                else:
+                    return False, f"POST请求失败 (状态码 {response.status})"
+            
+            result_endpoint = f"{base_url.rstrip('/')}/gradio_api/call/generate/{event_id}"
+            
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                try:
+                    result_req = urllib.request.Request(result_endpoint, method="GET")
+                    with urllib.request.urlopen(result_req, timeout=30) as result_response:
+                        result_body = result_response.read().decode("utf-8")
+                        
+                        for line in result_body.split('\n'):
+                            if line.startswith('data: '):
+                                data_str = line[6:]
+                                try:
+                                    result_data = json.loads(data_str)
+                                    
+                                    if isinstance(result_data, list) and len(result_data) > 0:
+                                        gallery = result_data[0]
+                                        if isinstance(gallery, list) and len(gallery) > 0:
+                                            first_image = gallery[0]
+                                            if isinstance(first_image, dict):
+                                                image_data = first_image.get("image", {})
+                                                image_url = image_data.get("url")
+                                                
+                                                if image_url:
+                                                    logger.info(f"{self.log_prefix} 获取到图片URL")
+                                                    return True, image_url
+                                
+                                except json.JSONDecodeError:
+                                    continue
+                        
+                        time.sleep(2)
+                        
+                except Exception as e:
+                    logger.debug(f"{self.log_prefix} 轮询中: {e}")
+                    time.sleep(2)
+            
+            return False, f"轮询超时（{timeout}秒）"
+            
+        except Exception as e:
+            logger.error(f"{self.log_prefix} Gradio API请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
+    def _make_http_image_request(
+        self, prompt: str, model: str, size: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """发送HTTP请求生成图片"""
+        import re
+        
+        base_url = self.get_config("api.base_url", "")
+        api_key = self.get_config("api.api_key", "")
+
+        endpoint = f"{base_url.rstrip('/')}/chat/completions"
+
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        logger.info(f"{self.log_prefix} 发起图片请求: {model}, Prompt: {prompt[:100]}...")
+
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                response_body = response.read().decode("utf-8")
+                
+                if 200 <= response.status < 300:
+                    response_data = json.loads(response_body)
+                    
+                    content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    
+                    url_pattern = r'https?://[^\s\)\]\"\'<>]+'
+                    urls = re.findall(url_pattern, content)
+                    
+                    image_url = None
+                    for url in urls:
+                        if any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']) or 'image' in url.lower():
+                            image_url = url
+                            break
+                    
+                    if not image_url and urls:
+                        image_url = urls[0]
+                    
+                    if image_url:
+                        return True, image_url
+                    
+                    if content.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+                        return True, content
+                    
+                    return False, f"API响应中未找到图片数据: {content[:200]}"
+                else:
+                    return False, f"API请求失败 (状态码 {response.status})"
+                    
+        except Exception as e:
+            logger.error(f"{self.log_prefix} HTTP请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
+
 # ===== 插件注册 =====
 
 @register_plugin
@@ -605,16 +1057,21 @@ class CustomPicPlugin(BasePlugin):
             ),
         },
         "api": {
+            "api_type": ConfigField(
+                type=str,
+                default="openai",
+                description="API类型：openai（OpenAI兼容格式）或 gradio（Gradio格式，如HuggingFace Space）",
+            ),
             "base_url": ConfigField(
                 type=str,
                 default="https://api.openai.com/v1",
-                description="图片生成API的基础URL（兼容OpenAI格式）",
+                description="图片生成API的基础URL",
             ),
             "api_key": ConfigField(
                 type=str,                 
                 default="YOUR_API_KEY_HERE",
-                description="图片生成API密钥", 
-                required=True
+                description="图片生成API密钥（Gradio API可留空）", 
+                required=False
             ),
         },
         "generation": {
@@ -648,6 +1105,26 @@ class CustomPicPlugin(BasePlugin):
                 default=40,
                 description="裁切像素数"
             ),
+            "gradio_resolution": ConfigField(
+                type=str,
+                default="1024x1024 ( 1:1 )",
+                description="Gradio API 图片分辨率（仅当 api_type=gradio 时生效）"
+            ),
+            "gradio_steps": ConfigField(
+                type=int,
+                default=8,
+                description="Gradio API 推理步数（仅当 api_type=gradio 时生效）"
+            ),
+            "gradio_shift": ConfigField(
+                type=int,
+                default=3,
+                description="Gradio API 时间偏移参数（仅当 api_type=gradio 时生效）"
+            ),
+            "gradio_timeout": ConfigField(
+                type=int,
+                default=120,
+                description="Gradio API 轮询超时时间（秒）"
+            ),
         },
         "llm": {
             "model_name": ConfigField(
@@ -660,13 +1137,28 @@ class CustomPicPlugin(BasePlugin):
                 default="",
                 description="调用LLM生成提示词时的系统提示词（留空则使用默认提示词）。支持 {persona} 占位符用于插入人设信息。"
             ),
+            "context_message_limit": ConfigField(
+                type=int,
+                default=20,
+                description="传递给LLM的聊天记录条数上限（1-100）"
+            ),
+            "context_time_minutes": ConfigField(
+                type=int,
+                default=30,
+                description="获取聊天记录的时间范围（分钟）"
+            ),
         },
         "components": {
             "enable_image_generation": ConfigField(
                 type=bool, 
                 default=True, 
-                description="是否启用图片生成Action"
-            )
+                description="是否启用图片生成Action（LLM智能触发）"
+            ),
+            "enable_direct_pic_command": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用 /pic 指令（直接透传prompt到生图API）"
+            ),
         },
     }
 
@@ -675,4 +1167,6 @@ class CustomPicPlugin(BasePlugin):
         components = []
         if self.get_config("components.enable_image_generation", True):
             components.append((CustomPicAction.get_action_info(), CustomPicAction))
+        if self.get_config("components.enable_direct_pic_command", True):
+            components.append((DirectPicCommand.get_command_info(), DirectPicCommand))
         return components
