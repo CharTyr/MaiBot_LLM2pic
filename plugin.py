@@ -1085,6 +1085,7 @@ class CustomPicAction(BaseAction):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
         
         logger.info(f"{self.log_prefix} 发起SD API图片请求, Prompt: {prompt[:100]}...")
@@ -1113,10 +1114,10 @@ class CustomPicAction(BaseAction):
                         elif isinstance(first_img, dict):
                             image_data = first_img.get("url") or first_img.get("image") or first_img.get("base64")
                     elif "data" in response_data:
-                        # 有些 API 返回 {"data": {"image": "..."}}
+                        # 有些 API 返回 {"data": {"image": "..."}} 或 {"data": {"image_url": "..."}}
                         data_obj = response_data["data"]
                         if isinstance(data_obj, dict):
-                            image_data = data_obj.get("image") or data_obj.get("url")
+                            image_data = data_obj.get("image") or data_obj.get("url") or data_obj.get("image_url")
                         elif isinstance(data_obj, str):
                             image_data = data_obj
                     
@@ -1166,6 +1167,7 @@ class CustomPicAction(BaseAction):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
 
         logger.info(f"{self.log_prefix} 发起图片请求: {model}, Prompt: {prompt[:100]}...")
@@ -1615,6 +1617,7 @@ class DirectPicCommand(BaseCommand):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
         
         logger.info(f"{self.log_prefix} 发起SD API图片请求, Prompt: {prompt[:100]}...")
@@ -1644,7 +1647,7 @@ class DirectPicCommand(BaseCommand):
                     elif "data" in response_data:
                         data_obj = response_data["data"]
                         if isinstance(data_obj, dict):
-                            image_data = data_obj.get("image") or data_obj.get("url")
+                            image_data = data_obj.get("image") or data_obj.get("url") or data_obj.get("image_url")
                         elif isinstance(data_obj, str):
                             image_data = data_obj
                     
@@ -1684,6 +1687,7 @@ class DirectPicCommand(BaseCommand):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
 
         logger.info(f"{self.log_prefix} 发起图片请求: {model}, Prompt: {prompt[:100]}...")
