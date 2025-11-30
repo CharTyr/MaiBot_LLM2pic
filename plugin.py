@@ -118,10 +118,19 @@ class StyleRouter:
             "base_url": style_config.get("base_url", ""),
             "api_key": style_config.get("api_key", ""),
             "model_name": style_config.get("model_name", ""),
+            "custom_prompt_add": style_config.get("custom_prompt_add", ""),
             "gradio_resolution": style_config.get("gradio_resolution", "1024x1024 ( 1:1 )"),
             "gradio_steps": style_config.get("gradio_steps", 8),
             "gradio_shift": style_config.get("gradio_shift", 3),
             "gradio_timeout": style_config.get("gradio_timeout", 120),
+            # SD API 参数
+            "sd_negative_prompt": style_config.get("sd_negative_prompt", ""),
+            "sd_width": style_config.get("sd_width", 512),
+            "sd_height": style_config.get("sd_height", 512),
+            "sd_steps": style_config.get("sd_steps", 20),
+            "sd_cfg": style_config.get("sd_cfg", 7.0),
+            "sd_model_index": style_config.get("sd_model_index", 0),
+            "sd_seed": style_config.get("sd_seed", -1),
         }
     
     def route(
@@ -578,10 +587,6 @@ class CustomPicAction(BaseAction):
             return False, f"提示词生成失败: {generated_prompt}"
         
         logger.info(f"{self.log_prefix} LLM生成的提示词: {generated_prompt[:200]}..., 风格: {llm_style}")
-        
-        # 构建最终提示词
-        final_prompt = self._build_final_prompt(generated_prompt)
-        logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
 
         # 创建风格路由器并决定使用哪个模型
         style_router = StyleRouter(self.config)
@@ -592,6 +597,10 @@ class CustomPicAction(BaseAction):
         )
         
         logger.info(f"{self.log_prefix} 风格路由结果: style={selected_style}, reason={route_reason}")
+        
+        # 构建最终提示词（使用风格特定的附加提示词）
+        final_prompt = self._build_final_prompt(generated_prompt, model_config)
+        logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
         
         # 检查是否有可用的模型配置
         if model_config is None:
@@ -648,6 +657,26 @@ class CustomPicAction(BaseAction):
                     prompt=final_prompt,
                     base_url=http_base_url,
                     gradio_params=gradio_params,
+                )
+            elif api_type.lower() == "sd_api":
+                # 使用 SD API
+                sd_params = None
+                if model_config:
+                    sd_params = {
+                        "negative_prompt": model_config.get("sd_negative_prompt", ""),
+                        "width": model_config.get("sd_width", 512),
+                        "height": model_config.get("sd_height", 512),
+                        "steps": model_config.get("sd_steps", 20),
+                        "cfg": model_config.get("sd_cfg", 7.0),
+                        "model_index": model_config.get("sd_model_index", 0),
+                        "seed": model_config.get("sd_seed", -1),
+                    }
+                success, result = await asyncio.to_thread(
+                    self._make_sd_api_request,
+                    prompt=final_prompt,
+                    base_url=http_base_url,
+                    api_key=http_api_key,
+                    sd_params=sd_params,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -750,12 +779,17 @@ class CustomPicAction(BaseAction):
             # 回退到replyer模型
             return model_config.model_task_config.replyer
 
-    def _build_final_prompt(self, generated_prompt: str) -> str:
+    def _build_final_prompt(self, generated_prompt: str, model_config: Optional[dict] = None) -> str:
         """构建最终的图片生成提示词"""
         parts = []
         
-        # 添加全局附加提示词
-        custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
+        # 优先使用风格特定的附加提示词，否则使用全局附加提示词
+        custom_prompt_add = ""
+        if model_config and model_config.get("custom_prompt_add"):
+            custom_prompt_add = model_config.get("custom_prompt_add", "")
+        else:
+            custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
+        
         if custom_prompt_add:
             parts.append(custom_prompt_add)
         
@@ -1019,6 +1053,87 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} Gradio API请求错误: {e!r}", exc_info=True)
             return False, str(e)
 
+    def _make_sd_api_request(
+        self,
+        prompt: str,
+        base_url: str,
+        api_key: str,
+        sd_params: Optional[dict] = None,
+    ) -> Tuple[bool, str]:
+        """发送 SD API 请求生成图片"""
+        endpoint = f"{base_url.rstrip('/')}/api/v1/generate_image"
+        
+        # 构建请求参数
+        payload = {
+            "prompt": prompt,
+        }
+        
+        if sd_params:
+            if sd_params.get("negative_prompt"):
+                payload["negative_prompt"] = sd_params["negative_prompt"]
+            payload["width"] = sd_params.get("width", 512)
+            payload["height"] = sd_params.get("height", 512)
+            payload["steps"] = sd_params.get("steps", 20)
+            payload["cfg"] = sd_params.get("cfg", 7.0)
+            payload["model_index"] = sd_params.get("model_index", 0)
+            payload["seed"] = sd_params.get("seed", -1)
+        
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        
+        logger.info(f"{self.log_prefix} 发起SD API图片请求, Prompt: {prompt[:100]}...")
+        
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                response_body = response.read().decode("utf-8")
+                
+                if 200 <= response.status < 300:
+                    response_data = json.loads(response_body)
+                    
+                    # 尝试从响应中提取图片
+                    # 常见的响应格式：{"image": "base64..."} 或 {"url": "..."} 或 {"images": [...]}
+                    image_data = None
+                    
+                    if "image" in response_data:
+                        image_data = response_data["image"]
+                    elif "url" in response_data:
+                        image_data = response_data["url"]
+                    elif "images" in response_data and response_data["images"]:
+                        first_img = response_data["images"][0]
+                        if isinstance(first_img, str):
+                            image_data = first_img
+                        elif isinstance(first_img, dict):
+                            image_data = first_img.get("url") or first_img.get("image") or first_img.get("base64")
+                    elif "data" in response_data:
+                        # 有些 API 返回 {"data": {"image": "..."}}
+                        data_obj = response_data["data"]
+                        if isinstance(data_obj, dict):
+                            image_data = data_obj.get("image") or data_obj.get("url")
+                        elif isinstance(data_obj, str):
+                            image_data = data_obj
+                    
+                    if image_data:
+                        logger.info(f"{self.log_prefix} SD API 返回图片成功")
+                        return True, image_data
+                    
+                    # 如果响应本身是 base64
+                    if isinstance(response_data, str) and response_data.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+                        return True, response_data
+                    
+                    return False, f"SD API 响应中未找到图片数据: {str(response_data)[:200]}"
+                else:
+                    return False, f"SD API 请求失败 (状态码 {response.status})"
+                    
+        except Exception as e:
+            logger.error(f"{self.log_prefix} SD API 请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
     def _make_http_image_request(
         self, 
         prompt: str, 
@@ -1171,12 +1286,13 @@ class DirectPicCommand(BaseCommand):
                 await self.send_text("API配置错误：base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() != "gradio":
+            if api_type.lower() not in ["gradio"]:
                 if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
                     await self.send_text("API配置错误：api_key 未配置")
                     return False, None, True
             
             gradio_params = None
+            sd_params = None
         else:
             # 使用风格模型配置
             api_type = model_config.get("api_type", "openai")
@@ -1194,7 +1310,11 @@ class DirectPicCommand(BaseCommand):
                 await self.send_text(f"{selected_style} 模型的 base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() != "gradio":
+            if api_type.lower() not in ["gradio", "sd_api"]:
+                if not http_api_key or not http_api_key.strip():
+                    await self.send_text(f"{selected_style} 模型的 API密钥未配置")
+                    return False, None, True
+            elif api_type.lower() == "sd_api":
                 if not http_api_key or not http_api_key.strip():
                     await self.send_text(f"{selected_style} 模型的 API密钥未配置")
                     return False, None, True
@@ -1205,9 +1325,24 @@ class DirectPicCommand(BaseCommand):
                 "shift": model_config.get("gradio_shift", 3),
                 "timeout": model_config.get("gradio_timeout", 120),
             }
+            
+            sd_params = {
+                "negative_prompt": model_config.get("sd_negative_prompt", ""),
+                "width": model_config.get("sd_width", 512),
+                "height": model_config.get("sd_height", 512),
+                "steps": model_config.get("sd_steps", 20),
+                "cfg": model_config.get("sd_cfg", 7.0),
+                "model_index": model_config.get("sd_model_index", 0),
+                "seed": model_config.get("sd_seed", -1),
+            }
 
-        # 添加全局附加提示词
-        custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
+        # 优先使用风格特定的附加提示词，否则使用全局附加提示词
+        custom_prompt_add = ""
+        if model_config and model_config.get("custom_prompt_add"):
+            custom_prompt_add = model_config.get("custom_prompt_add", "")
+        else:
+            custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
+        
         if custom_prompt_add and custom_prompt_add.strip():
             final_prompt = f"{custom_prompt_add.strip()}, {raw_prompt}"
         else:
@@ -1225,6 +1360,14 @@ class DirectPicCommand(BaseCommand):
                     prompt=final_prompt,
                     base_url=http_base_url,
                     gradio_params=gradio_params,
+                )
+            elif api_type.lower() == "sd_api":
+                success, result = await asyncio.to_thread(
+                    self._make_sd_api_request,
+                    prompt=final_prompt,
+                    base_url=http_base_url,
+                    api_key=http_api_key,
+                    sd_params=sd_params if model_config else None,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -1440,6 +1583,84 @@ class DirectPicCommand(BaseCommand):
             logger.error(f"{self.log_prefix} Gradio API请求错误: {e!r}", exc_info=True)
             return False, str(e)
 
+    def _make_sd_api_request(
+        self,
+        prompt: str,
+        base_url: str,
+        api_key: str,
+        sd_params: Optional[dict] = None,
+    ) -> Tuple[bool, str]:
+        """发送 SD API 请求生成图片"""
+        endpoint = f"{base_url.rstrip('/')}/api/v1/generate_image"
+        
+        # 构建请求参数
+        payload = {
+            "prompt": prompt,
+        }
+        
+        if sd_params:
+            if sd_params.get("negative_prompt"):
+                payload["negative_prompt"] = sd_params["negative_prompt"]
+            payload["width"] = sd_params.get("width", 512)
+            payload["height"] = sd_params.get("height", 512)
+            payload["steps"] = sd_params.get("steps", 20)
+            payload["cfg"] = sd_params.get("cfg", 7.0)
+            payload["model_index"] = sd_params.get("model_index", 0)
+            payload["seed"] = sd_params.get("seed", -1)
+        
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        
+        logger.info(f"{self.log_prefix} 发起SD API图片请求, Prompt: {prompt[:100]}...")
+        
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                response_body = response.read().decode("utf-8")
+                
+                if 200 <= response.status < 300:
+                    response_data = json.loads(response_body)
+                    
+                    # 尝试从响应中提取图片
+                    image_data = None
+                    
+                    if "image" in response_data:
+                        image_data = response_data["image"]
+                    elif "url" in response_data:
+                        image_data = response_data["url"]
+                    elif "images" in response_data and response_data["images"]:
+                        first_img = response_data["images"][0]
+                        if isinstance(first_img, str):
+                            image_data = first_img
+                        elif isinstance(first_img, dict):
+                            image_data = first_img.get("url") or first_img.get("image") or first_img.get("base64")
+                    elif "data" in response_data:
+                        data_obj = response_data["data"]
+                        if isinstance(data_obj, dict):
+                            image_data = data_obj.get("image") or data_obj.get("url")
+                        elif isinstance(data_obj, str):
+                            image_data = data_obj
+                    
+                    if image_data:
+                        logger.info(f"{self.log_prefix} SD API 返回图片成功")
+                        return True, image_data
+                    
+                    if isinstance(response_data, str) and response_data.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+                        return True, response_data
+                    
+                    return False, f"SD API 响应中未找到图片数据: {str(response_data)[:200]}"
+                else:
+                    return False, f"SD API 请求失败 (状态码 {response.status})"
+                    
+        except Exception as e:
+            logger.error(f"{self.log_prefix} SD API 请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
     def _make_http_image_request(
         self, prompt: str, model: str, size: Optional[str] = None
     ) -> Tuple[bool, str]:
@@ -1510,7 +1731,7 @@ class CustomPicPlugin(BasePlugin):
     """使用LLM生成提示词的图片生成插件"""
     
     plugin_name = "MaiBot_LLM2pic"
-    plugin_version = "3.0.0"
+    plugin_version = "3.1.0"
     plugin_author = "Ptrel"
     enable_plugin = True
     dependencies: List[str] = []
@@ -1569,7 +1790,7 @@ class CustomPicPlugin(BasePlugin):
             "api_type": ConfigField(
                 type=str,
                 default="gradio",
-                description="API类型：openai 或 gradio"
+                description="API类型：openai、gradio 或 sd_api"
             ),
             "base_url": ConfigField(
                 type=str,
@@ -1587,6 +1808,11 @@ class CustomPicPlugin(BasePlugin):
                 default="",
                 description="模型名称（OpenAI 格式需要）"
             ),
+            "custom_prompt_add": ConfigField(
+                type=str,
+                default="",
+                description="该风格专用的附加提示词（留空则使用全局 generation.custom_prompt_add）"
+            ),
             "gradio_resolution": ConfigField(
                 type=str,
                 default="1024x1024 ( 1:1 )",
@@ -1607,6 +1833,41 @@ class CustomPicPlugin(BasePlugin):
                 default=120,
                 description="Gradio 轮询超时时间（秒）"
             ),
+            "sd_negative_prompt": ConfigField(
+                type=str,
+                default="",
+                description="SD API 负面提示词"
+            ),
+            "sd_width": ConfigField(
+                type=int,
+                default=512,
+                description="SD API 图像宽度 (64-2048)"
+            ),
+            "sd_height": ConfigField(
+                type=int,
+                default=512,
+                description="SD API 图像高度 (64-2048)"
+            ),
+            "sd_steps": ConfigField(
+                type=int,
+                default=20,
+                description="SD API 生成步数 (1-50)"
+            ),
+            "sd_cfg": ConfigField(
+                type=float,
+                default=7.0,
+                description="SD API CFG引导强度 (1-10)"
+            ),
+            "sd_model_index": ConfigField(
+                type=int,
+                default=0,
+                description="SD API 模型索引"
+            ),
+            "sd_seed": ConfigField(
+                type=int,
+                default=-1,
+                description="SD API 随机种子，-1为随机"
+            ),
         },
         "real": {
             "enabled": ConfigField(
@@ -1617,7 +1878,7 @@ class CustomPicPlugin(BasePlugin):
             "api_type": ConfigField(
                 type=str,
                 default="openai",
-                description="API类型：openai 或 gradio"
+                description="API类型：openai、gradio 或 sd_api"
             ),
             "base_url": ConfigField(
                 type=str,
@@ -1635,6 +1896,11 @@ class CustomPicPlugin(BasePlugin):
                 default="gpt-image-1",
                 description="模型名称"
             ),
+            "custom_prompt_add": ConfigField(
+                type=str,
+                default="",
+                description="该风格专用的附加提示词（留空则使用全局 generation.custom_prompt_add）"
+            ),
             "gradio_resolution": ConfigField(
                 type=str,
                 default="1024x1024 ( 1:1 )",
@@ -1654,6 +1920,41 @@ class CustomPicPlugin(BasePlugin):
                 type=int,
                 default=120,
                 description="Gradio 轮询超时时间（秒）"
+            ),
+            "sd_negative_prompt": ConfigField(
+                type=str,
+                default="",
+                description="SD API 负面提示词"
+            ),
+            "sd_width": ConfigField(
+                type=int,
+                default=512,
+                description="SD API 图像宽度 (64-2048)"
+            ),
+            "sd_height": ConfigField(
+                type=int,
+                default=512,
+                description="SD API 图像高度 (64-2048)"
+            ),
+            "sd_steps": ConfigField(
+                type=int,
+                default=20,
+                description="SD API 生成步数 (1-50)"
+            ),
+            "sd_cfg": ConfigField(
+                type=float,
+                default=7.0,
+                description="SD API CFG引导强度 (1-10)"
+            ),
+            "sd_model_index": ConfigField(
+                type=int,
+                default=0,
+                description="SD API 模型索引"
+            ),
+            "sd_seed": ConfigField(
+                type=int,
+                default=-1,
+                description="SD API 随机种子，-1为随机"
             ),
         },
         "llm": {

@@ -1,92 +1,134 @@
-# MaiBot_LLM2pic 插件配置示例
-# 版本: 4.0.0 - 双模型支持
+# MaiBot_LLM2pic 插件配置
+# 版本: 3.1.0 - 双模型风格支持
+#
+# 本插件支持配置两个独立的图片生成模型：
+# - anime: 二次元/动漫风格
+# - real: 写实/真实风格
+#
+# LLM 会根据用户请求自动判断使用哪个模型，也可以通过 /pic anime 或 /pic real 手动指定
 
+# ============================================================
+# 插件基本配置
+# ============================================================
 [plugin]
 enabled = true
 
-# ===== 通用生成参数 =====
+# ============================================================
+# 通用生成参数
+# ============================================================
 [generation]
-# 默认风格：anime（二次元）或 real（写实）
-# 当 LLM 无法判断风格时使用此默认值
+# 默认风格：当 LLM 无法判断风格时使用
+# 可选值: "anime" 或 "real"
 default_style = "anime"
 
 # 全局附加提示词（会添加到所有生成的提示词前面，可留空）
 custom_prompt_add = ""
 
-# 图片裁切设置（用于去除AI生成的水印）
+# 图片裁切设置（用于去除 AI 生成的水印）
 crop_enabled = false
-crop_position = "bottom"  # top, bottom, left, right
+crop_position = "bottom"  # 可选: top, bottom, left, right
 crop_pixels = 40
 
-# ===== Anime 模型配置（二次元风格）=====
+# ============================================================
+# Anime 模型配置（二次元/动漫风格）
+# ============================================================
+# 用于生成动漫角色、游戏角色、虚拟人物、可爱风格等
+# 自拍模式会强制使用此模型
 [anime]
-# 是否启用 anime 模型
+# 是否启用此模型
 enabled = true
 
-# API类型：openai 或 gradio
+# API 类型: "openai" 或 "gradio"
 api_type = "gradio"
 
-# API 基础 URL
+# API 端点 URL
 # Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
 # OpenAI 示例: "https://api.openai.com/v1"
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"
 
-# API 密钥（Gradio 可留空）
+# API 密钥（Gradio 类型可留空）
 api_key = ""
 
-# 模型名称（OpenAI 格式需要）
+# 模型名称（仅 OpenAI 类型需要，如 "dall-e-3", "gpt-image-1"）
 model_name = ""
 
-# Gradio 专用参数
-gradio_resolution = "1024x1024 ( 1:1 )"  # 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )"
-gradio_steps = 8          # 推理步数
-gradio_shift = 3          # 时间偏移参数
-gradio_timeout = 120      # 轮询超时时间（秒）
+# --- Gradio 专用参数（仅当 api_type = "gradio" 时生效）---
+# 图片分辨率
+# 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )", "720x1280 ( 9:16 )"
+gradio_resolution = "1024x1024 ( 1:1 )"
 
-# ===== Real 模型配置（写实风格）=====
+# 推理步数（4-50，越大质量越好但越慢）
+gradio_steps = 8
+
+# 时间偏移参数
+gradio_shift = 3
+
+# 轮询超时时间（秒）
+gradio_timeout = 120
+
+# ============================================================
+# Real 模型配置（写实/真实风格）
+# ============================================================
+# 用于生成真实人物、照片风格、写实场景、自然风景等
 [real]
-# 是否启用 real 模型
+# 是否启用此模型
 enabled = false
 
-# API类型：openai 或 gradio
+# API 类型: "openai" 或 "gradio"
 api_type = "openai"
 
-# API 基础 URL
+# API 端点 URL
 base_url = ""
 
 # API 密钥
 api_key = ""
 
-# 模型名称
+# 模型名称（如 "dall-e-3", "gpt-image-1", "grok-2-image"）
 model_name = "gpt-image-1"
 
-# Gradio 专用参数（如果使用 Gradio）
+# --- Gradio 专用参数（仅当 api_type = "gradio" 时生效）---
 gradio_resolution = "1024x1024 ( 1:1 )"
 gradio_steps = 8
 gradio_shift = 3
 gradio_timeout = 120
 
-# ===== LLM配置（用于生成提示词）=====
+# ============================================================
+# LLM 配置（用于生成提示词）
+# ============================================================
 [llm]
-# 用于生成提示词的LLM模型名称（留空则使用系统默认的planner模型）
+# 用于生成提示词的 LLM 模型名称（留空则使用系统默认的 planner 模型）
 model_name = ""
 
-# 传递给LLM的聊天记录条数上限（1-100）
+# 传递给 LLM 的聊天记录条数上限（1-100）
 context_message_limit = 20
 
 # 获取聊天记录的时间范围（分钟，1-1440）
 context_time_minutes = 30
 
-# 调用LLM生成提示词时的系统提示词（留空则使用默认提示词）
+# 自定义系统提示词（留空则使用默认提示词）
 # 支持 {persona} 占位符用于插入人设信息
 # LLM 会输出 JSON 格式：{"prompt": "...", "style": "anime|real"}
 system_prompt = ""
 
-# ===== 组件配置 =====
+# ============================================================
+# 组件启用配置
+# ============================================================
 [components]
 # 是否启用图片生成 Action（LLM 智能触发）
 enable_image_generation = true
 
 # 是否启用 /pic 指令
-# 用法: /pic <prompt> 或 /pic anime <prompt> 或 /pic real <prompt>
+# 用法: /pic <prompt>
+#       /pic anime <prompt>  - 强制使用 anime 模型
+#       /pic real <prompt>   - 强制使用 real 模型
 enable_direct_pic_command = true
+
+# ============================================================
+# 向后兼容配置（可选，不推荐使用）
+# ============================================================
+# 如果 [anime] 和 [real] 都未启用，将使用此配置
+# 建议迁移到上面的 [anime] 和 [real] 配置
+[api]
+api_type = "gradio"
+base_url = "https://tongyi-mai-z-image-turbo.hf.space"
+api_key = ""
