@@ -20,7 +20,8 @@
 
 - 🤖 **智能提示词生成**：使用 LLM 根据聊天上下文自动生成高质量的图片提示词
 - 🎨 **多 API 支持**：支持 OpenAI 格式和 Gradio 格式的图片生成 API
-- 🖼️ **自拍模式**：可以根据角色人设生成自拍照片
+- 🎭 **双模型风格**：支持 anime（二次元）和 real（写实）两种风格，LLM 自动判断或手动指定
+- 🖼️ **自拍模式**：可以根据角色人设生成自拍照片（强制使用 anime 风格）
 - ✂️ **图片裁切**：支持自动裁切图片边缘（用于去除水印）
 - 🔧 **高度可配置**：丰富的配置选项，满足不同需求
 
@@ -119,7 +120,7 @@ default_model = "grok-2-image"
 enabled = true
 
 [api]
-# API类型：openai 或 gradio
+# API类型：openai 或 gradio（向后兼容，新配置建议使用 [anime] 和 [real]）
 api_type = "gradio"
 # API基础URL
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"
@@ -130,6 +131,8 @@ api_key = ""
 # OpenAI格式专用
 default_model = "gpt-image-1"
 default_size = ""
+# 默认风格：anime（二次元）或 real（写实）
+default_style = "anime"
 
 # 全局附加提示词
 custom_prompt_add = ""
@@ -140,6 +143,30 @@ crop_position = "bottom"  # top/bottom/left/right
 crop_pixels = 40
 
 # Gradio格式专用
+gradio_resolution = "1024x1024 ( 1:1 )"
+gradio_steps = 8
+gradio_shift = 3
+gradio_timeout = 120
+
+# ===== Anime 风格模型配置 =====
+[anime]
+enabled = true
+api_type = "gradio"
+base_url = "https://tongyi-mai-z-image-turbo.hf.space"
+api_key = ""
+model_name = ""
+gradio_resolution = "1024x1024 ( 1:1 )"
+gradio_steps = 8
+gradio_shift = 3
+gradio_timeout = 120
+
+# ===== Real 风格模型配置 =====
+[real]
+enabled = false
+api_type = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-api-key-here"
+model_name = "dall-e-3"
 gradio_resolution = "1024x1024 ( 1:1 )"
 gradio_steps = 8
 gradio_shift = 3
@@ -171,10 +198,30 @@ enable_image_generation = true
 |--------|------|--------|------|
 | `default_model` | string | `"gpt-image-1"` | OpenAI 格式的模型名称 |
 | `default_size` | string | `""` | OpenAI 格式的图片尺寸 |
+| `default_style` | string | `"anime"` | 默认风格：anime 或 real |
 | `custom_prompt_add` | string | `""` | 全局附加提示词 |
 | `crop_enabled` | bool | `false` | 是否启用图片裁切 |
 | `crop_position` | string | `"bottom"` | 裁切位置：top/bottom/left/right |
 | `crop_pixels` | int | `40` | 裁切像素数 |
+
+#### 双模型配置（anime/real）
+
+每个风格模型都有独立的配置节：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | - | 是否启用该风格模型 |
+| `api_type` | string | - | API 类型：openai 或 gradio |
+| `base_url` | string | - | API 基础 URL |
+| `api_key` | string | - | API 密钥（Gradio 可留空） |
+| `model_name` | string | - | 模型名称（OpenAI 格式使用） |
+| `gradio_*` | - | - | Gradio 专用参数（同上） |
+
+**风格路由优先级：**
+1. 自拍模式 → 强制使用 anime
+2. 手动指定（`/pic anime` 或 `/pic real`）→ 使用指定风格
+3. LLM 判断 → 根据内容自动选择
+4. 默认风格 → 使用 `default_style` 配置
 
 #### Gradio 专用参数
 
@@ -214,9 +261,17 @@ enable_image_generation = true
 - "我想看看樱花的样子"
 - "画一个女孩在雨中"
 
+### 指定风格绘图
+
+使用 `/pic` 命令可以手动指定风格：
+
+- `/pic anime 一个可爱的女孩` - 使用二次元风格
+- `/pic real 一张风景照片` - 使用写实风格
+- `/pic a cute cat` - 使用默认风格（由 LLM 判断或配置决定）
+
 ### 自拍模式
 
-当用户要求自拍时，插件会以角色身份生成自拍照：
+当用户要求自拍时，插件会以角色身份生成自拍照（强制使用 anime 风格）：
 
 - "自拍"
 - "来张自拍"
@@ -437,7 +492,27 @@ gradio_timeout = 180
 
 ## 更新日志
 
-### [3.0.0] - 2025-11-29
+### [3.1.0] - 2024-11-30
+
+#### 新增功能
+- 🎭 **双模型风格支持**：支持配置 anime（二次元）和 real（写实）两种风格的生图模型
+- 🤖 **LLM 风格判断**：LLM 在生成提示词时会自动判断适合的风格
+- 🎯 **手动风格指定**：支持 `/pic anime <prompt>` 和 `/pic real <prompt>` 命令
+- 📝 **JSON 输出格式**：LLM 输出改为 JSON 格式，包含 prompt 和 style 字段
+
+#### 技术改进
+- 🔄 **StyleRouter 类**：新增风格路由器，根据各种条件决定使用哪个模型
+- 📊 **LLMOutputParser 类**：新增 LLM 输出解析器，解析 JSON 格式输出
+- 🔧 **配置结构更新**：新增 `[anime]` 和 `[real]` 配置节
+- ✅ **向后兼容**：完全兼容旧的 `[api]` 配置方式
+
+#### 风格路由优先级
+1. 自拍模式 → 强制 anime
+2. 手动指定 → 使用指定风格
+3. LLM 判断 → 自动选择
+4. 默认风格 → 使用配置
+
+### [3.0.0] - 2024-11-29
 
 #### 新增功能
 - ✨ **Gradio API 支持**：新增对 Gradio 格式 API 的支持，可以调用 HuggingFace Space 上的图片生成模型
@@ -549,14 +624,28 @@ MaiBot_LLM2pic/
 
 ### 核心类和方法
 
+- `StyleRouter`: 风格路由器
+  - `route()`: 根据条件决定使用哪个模型
+  - `is_style_available()`: 检查风格是否可用
+  - `get_available_styles()`: 获取可用风格列表
+
+- `LLMOutputParser`: LLM 输出解析器
+  - `parse()`: 解析 JSON 格式的 LLM 输出
+  - `validate_style()`: 验证风格是否有效
+
 - `PromptGenerator`: 提示词生成器
-  - `generate_prompt()`: 使用 LLM 生成提示词
+  - `generate_prompt()`: 使用 LLM 生成提示词（旧版）
+  - `generate_prompt_with_style()`: 使用 LLM 生成提示词和风格判断
 
 - `CustomPicAction`: 图片生成动作
-  - `execute()`: 执行图片生成
+  - `execute()`: 执行图片生成（集成 StyleRouter）
   - `_make_gradio_image_request()`: Gradio API 调用
   - `_make_http_image_request()`: OpenAI API 调用
   - `_handle_image_result()`: 处理图片结果
+
+- `DirectPicCommand`: 直接生图命令
+  - `execute()`: 执行直接图片生成（支持风格指定）
+  - `parse_style_from_prompt()`: 从 prompt 解析风格前缀
 
 - `CustomPicPlugin`: 插件主类
   - `get_plugin_components()`: 返回插件组件

@@ -1,32 +1,16 @@
 # MaiBot_LLM2pic 插件配置示例
+# 版本: 4.0.0 - 双模型支持
 
 [plugin]
 enabled = true
 
-# ===== API配置 =====
-[api]
-# API类型：
-# - "openai": OpenAI兼容格式（如OpenAI、Grok等）
-# - "gradio": Gradio格式（如HuggingFace Space）
-api_type = "gradio"
-
-# API基础URL
-# OpenAI示例: "https://api.openai.com/v1"
-# Gradio示例: "https://tongyi-mai-z-image-turbo.hf.space"
-base_url = "https://tongyi-mai-z-image-turbo.hf.space"
-
-# API密钥（Gradio API通常不需要，可留空）
-api_key = ""
-
-# ===== 图片生成参数 =====
+# ===== 通用生成参数 =====
 [generation]
-# OpenAI格式使用的模型（仅当api_type="openai"时生效）
-default_model = "gpt-image-1"
+# 默认风格：anime（二次元）或 real（写实）
+# 当 LLM 无法判断风格时使用此默认值
+default_style = "anime"
 
-# OpenAI格式的图片尺寸（仅当api_type="openai"时生效，留空则由模型决定）
-default_size = ""
-
-# 全局附加提示词（会添加到LLM生成的提示词前面，可留空）
+# 全局附加提示词（会添加到所有生成的提示词前面，可留空）
 custom_prompt_add = ""
 
 # 图片裁切设置（用于去除AI生成的水印）
@@ -34,21 +18,75 @@ crop_enabled = false
 crop_position = "bottom"  # top, bottom, left, right
 crop_pixels = 40
 
-# Gradio API 专用参数（仅当api_type="gradio"时生效）
-gradio_resolution = "1024x1024 ( 1:1 )"  # 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )" 等
-gradio_steps = 8          # 推理步数，越大质量越好但速度越慢
+# ===== Anime 模型配置（二次元风格）=====
+[anime]
+# 是否启用 anime 模型
+enabled = true
+
+# API类型：openai 或 gradio
+api_type = "gradio"
+
+# API 基础 URL
+# Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
+# OpenAI 示例: "https://api.openai.com/v1"
+base_url = "https://tongyi-mai-z-image-turbo.hf.space"
+
+# API 密钥（Gradio 可留空）
+api_key = ""
+
+# 模型名称（OpenAI 格式需要）
+model_name = ""
+
+# Gradio 专用参数
+gradio_resolution = "1024x1024 ( 1:1 )"  # 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )"
+gradio_steps = 8          # 推理步数
 gradio_shift = 3          # 时间偏移参数
 gradio_timeout = 120      # 轮询超时时间（秒）
+
+# ===== Real 模型配置（写实风格）=====
+[real]
+# 是否启用 real 模型
+enabled = false
+
+# API类型：openai 或 gradio
+api_type = "openai"
+
+# API 基础 URL
+base_url = ""
+
+# API 密钥
+api_key = ""
+
+# 模型名称
+model_name = "gpt-image-1"
+
+# Gradio 专用参数（如果使用 Gradio）
+gradio_resolution = "1024x1024 ( 1:1 )"
+gradio_steps = 8
+gradio_shift = 3
+gradio_timeout = 120
 
 # ===== LLM配置（用于生成提示词）=====
 [llm]
 # 用于生成提示词的LLM模型名称（留空则使用系统默认的planner模型）
 model_name = ""
 
+# 传递给LLM的聊天记录条数上限（1-100）
+context_message_limit = 20
+
+# 获取聊天记录的时间范围（分钟，1-1440）
+context_time_minutes = 30
+
 # 调用LLM生成提示词时的系统提示词（留空则使用默认提示词）
 # 支持 {persona} 占位符用于插入人设信息
+# LLM 会输出 JSON 格式：{"prompt": "...", "style": "anime|real"}
 system_prompt = ""
 
 # ===== 组件配置 =====
 [components]
+# 是否启用图片生成 Action（LLM 智能触发）
 enable_image_generation = true
+
+# 是否启用 /pic 指令
+# 用法: /pic <prompt> 或 /pic anime <prompt> 或 /pic real <prompt>
+enable_direct_pic_command = true

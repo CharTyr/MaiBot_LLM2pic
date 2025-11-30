@@ -33,19 +33,27 @@ logger = get_logger("MaiBot_LLM2pic")
 
 # ===== 默认提示词模板 =====
 
-DEFAULT_SYSTEM_PROMPT = """你是一位专业的AI绘画提示词生成专家。你的任务是根据用户的请求和聊天上下文，生成高质量的英文图片生成提示词。
+DEFAULT_SYSTEM_PROMPT = """你是一位专业的AI绘画提示词生成专家。你的任务是根据用户的请求和聊天上下文，生成高质量的英文图片生成提示词，并判断适合的绘画风格。
 
 ## 你的角色设定
 {persona}
 
-## 输出规则
-1. 只输出纯英文提示词，不要有任何解释或其他内容
-2. 使用逗号分隔的关键词格式
-3. 关键词顺序：人物/主体 -> 外貌特征 -> 服装 -> 动作/姿势 -> 表情 -> 背景/场景 -> 风格
-4. 对于角色请求，使用角色的罗马音名称并补充作品名称，如 rem (re zero)
-5. 单人构图时添加 solo 标签
-6. 不要添加质量词如 masterpiece, best quality 等（系统会自动添加）
-7. 不要添加任何NSFW内容
+## 输出格式
+你必须以 JSON 格式输出，包含两个字段：
+- prompt: 英文图片生成提示词
+- style: 绘画风格，只能是 "anime"（二次元/动漫风格）或 "real"（写实/真实风格）
+
+## 风格判断规则
+- anime（二次元）：动漫角色、游戏角色、虚拟人物、可爱风格、日系风格、卡通风格
+- real（写实）：真实人物、照片风格、写实场景、自然风景、真实物品
+
+## 提示词规则
+1. 使用逗号分隔的英文关键词格式
+2. 关键词顺序：人物/主体 -> 外貌特征 -> 服装 -> 动作/姿势 -> 表情 -> 背景/场景
+3. 对于角色请求，使用角色的罗马音名称并补充作品名称，如 rem (re zero)
+4. 单人构图时添加 solo 标签
+5. 不要添加质量词如 masterpiece, best quality 等（系统会自动添加）
+6. 不要添加任何NSFW内容
 
 ## 自拍模式
 当用户要求自拍时，你需要以你的角色身份生成自拍照的提示词，包含：
@@ -53,13 +61,271 @@ DEFAULT_SYSTEM_PROMPT = """你是一位专业的AI绘画提示词生成专家。
 - selfie, front-facing camera, close-up shot
 - 自然的表情和姿势
 - 适合自拍的背景
+- 自拍模式下风格应为 anime
 
 ## 示例
 用户请求: "画一个女孩在雨中"
-输出: 1girl, solo, standing in rain, wet hair, wet clothes, sad expression, rainy day, city street background
+输出: {{"prompt": "1girl, solo, standing in rain, wet hair, wet clothes, sad expression, rainy day, city street background", "style": "anime"}}
+
+用户请求: "画一张真实的风景照"
+输出: {{"prompt": "beautiful landscape, mountain, lake, sunset, golden hour, realistic photography", "style": "real"}}
 
 用户请求: "自拍"
-输出: 1girl, solo, selfie, front-facing camera, close-up shot, smile, casual clothes, indoor background"""
+输出: {{"prompt": "1girl, solo, selfie, front-facing camera, close-up shot, smile, casual clothes, indoor background", "style": "anime"}}"""
+
+
+# ===== 风格路由器 =====
+
+class StyleRouter:
+    """风格路由器，根据各种条件决定使用哪个模型"""
+    
+    VALID_STYLES = ["anime", "real"]
+    
+    def __init__(self, config: dict):
+        """
+        初始化风格路由器
+        
+        Args:
+            config: 插件配置字典
+        """
+        self.config = config
+        self.default_style = config.get("generation", {}).get("default_style", "anime")
+        self.anime_config = self._extract_model_config("anime")
+        self.real_config = self._extract_model_config("real")
+        
+        logger.debug(f"[StyleRouter] 初始化完成: default_style={self.default_style}, "
+                    f"anime_enabled={self.anime_config is not None}, "
+                    f"real_enabled={self.real_config is not None}")
+    
+    def _extract_model_config(self, style: str) -> Optional[dict]:
+        """
+        提取指定风格的模型配置
+        
+        Args:
+            style: 风格名称 ("anime" 或 "real")
+            
+        Returns:
+            Optional[dict]: 模型配置字典，如果未启用则返回 None
+        """
+        style_config = self.config.get(style, {})
+        
+        # 检查是否启用
+        if not style_config.get("enabled", False):
+            return None
+        
+        return {
+            "api_type": style_config.get("api_type", "openai"),
+            "base_url": style_config.get("base_url", ""),
+            "api_key": style_config.get("api_key", ""),
+            "model_name": style_config.get("model_name", ""),
+            "gradio_resolution": style_config.get("gradio_resolution", "1024x1024 ( 1:1 )"),
+            "gradio_steps": style_config.get("gradio_steps", 8),
+            "gradio_shift": style_config.get("gradio_shift", 3),
+            "gradio_timeout": style_config.get("gradio_timeout", 120),
+        }
+    
+    def route(
+        self,
+        selfie_mode: bool = False,
+        manual_style: Optional[str] = None,
+        llm_style: Optional[str] = None
+    ) -> Tuple[str, Optional[dict], str]:
+        """
+        决定使用哪个模型
+        
+        优先级：selfie_mode > manual_style > llm_style > default_style
+        
+        Args:
+            selfie_mode: 是否为自拍模式
+            manual_style: 手动指定的风格
+            llm_style: LLM 判断的风格
+            
+        Returns:
+            Tuple[str, Optional[dict], str]: (style, model_config, reason)
+            - style: 选择的风格
+            - model_config: 对应的模型配置，如果未配置则为 None
+            - reason: 路由原因，用于日志
+        """
+        # 向后兼容：如果只配置了一个模型，所有请求都使用该模型
+        available_configs = []
+        if self.anime_config:
+            available_configs.append(("anime", self.anime_config))
+        if self.real_config:
+            available_configs.append(("real", self.real_config))
+        
+        if len(available_configs) == 0:
+            logger.warning("[StyleRouter] 没有配置任何模型")
+            return self.default_style, None, "no_model_configured"
+        
+        if len(available_configs) == 1:
+            only_style, only_config = available_configs[0]
+            logger.debug(f"[StyleRouter] 只配置了 {only_style} 模型，使用该模型")
+            return only_style, only_config, f"only_{only_style}_configured"
+        
+        # 1. selfie_mode 强制使用 anime
+        if selfie_mode:
+            if self.anime_config:
+                logger.debug("[StyleRouter] selfie_mode=True，使用 anime 模型")
+                return "anime", self.anime_config, "selfie_mode"
+            else:
+                # anime 未配置，回退到 real
+                logger.warning("[StyleRouter] selfie_mode=True 但 anime 未配置，回退到 real")
+                return "real", self.real_config, "selfie_mode_fallback_to_real"
+        
+        # 2. 手动指定风格
+        if manual_style:
+            manual_style_lower = manual_style.lower().strip()
+            if manual_style_lower in self.VALID_STYLES:
+                config = self.anime_config if manual_style_lower == "anime" else self.real_config
+                if config:
+                    logger.debug(f"[StyleRouter] 手动指定风格: {manual_style_lower}")
+                    return manual_style_lower, config, "manual_style"
+                else:
+                    logger.warning(f"[StyleRouter] 手动指定的风格 {manual_style_lower} 未配置")
+                    # 回退到另一个可用的模型
+                    fallback_style, fallback_config = available_configs[0]
+                    return fallback_style, fallback_config, f"manual_style_{manual_style_lower}_not_configured"
+        
+        # 3. LLM 判断的风格
+        if llm_style:
+            llm_style_lower = llm_style.lower().strip()
+            if llm_style_lower in self.VALID_STYLES:
+                config = self.anime_config if llm_style_lower == "anime" else self.real_config
+                if config:
+                    logger.debug(f"[StyleRouter] LLM 判断风格: {llm_style_lower}")
+                    return llm_style_lower, config, "llm_style"
+                else:
+                    logger.warning(f"[StyleRouter] LLM 判断的风格 {llm_style_lower} 未配置，使用默认风格")
+        
+        # 4. 使用默认风格
+        default_config = self.anime_config if self.default_style == "anime" else self.real_config
+        if default_config:
+            logger.debug(f"[StyleRouter] 使用默认风格: {self.default_style}")
+            return self.default_style, default_config, "default_style"
+        
+        # 默认风格未配置，使用另一个可用的
+        fallback_style, fallback_config = available_configs[0]
+        logger.warning(f"[StyleRouter] 默认风格 {self.default_style} 未配置，回退到 {fallback_style}")
+        return fallback_style, fallback_config, "default_style_fallback"
+    
+    def is_style_available(self, style: str) -> bool:
+        """检查指定风格是否可用"""
+        if style == "anime":
+            return self.anime_config is not None
+        elif style == "real":
+            return self.real_config is not None
+        return False
+    
+    def get_available_styles(self) -> List[str]:
+        """获取所有可用的风格列表"""
+        styles = []
+        if self.anime_config:
+            styles.append("anime")
+        if self.real_config:
+            styles.append("real")
+        return styles
+
+
+# ===== LLM 输出解析器 =====
+
+class LLMOutputParser:
+    """LLM 输出解析器，用于解析 JSON 格式的 LLM 输出"""
+    
+    VALID_STYLES = ["anime", "real"]
+    
+    @staticmethod
+    def parse(llm_output: str, default_style: str = "anime") -> Tuple[str, Optional[str]]:
+        """
+        解析 LLM 输出
+        
+        Args:
+            llm_output: LLM 的原始输出
+            default_style: 默认风格（当无法解析时使用）
+            
+        Returns:
+            Tuple[str, Optional[str]]: (prompt, style)
+            - 如果解析成功，返回提取的 prompt 和 style
+            - 如果解析失败，返回原始输出作为 prompt，style 为 None
+        """
+        if not llm_output:
+            return "", None
+        
+        llm_output = llm_output.strip()
+        
+        # 尝试解析 JSON
+        try:
+            # 尝试直接解析
+            data = json.loads(llm_output)
+            
+            # 确保解析结果是字典
+            if not isinstance(data, dict):
+                logger.warning(f"[LLMOutputParser] JSON 解析结果不是字典，使用原始输出")
+                return llm_output, None
+            
+            prompt = data.get("prompt", "")
+            style = data.get("style", None)
+            
+            # 验证 style
+            validated_style = LLMOutputParser.validate_style(style)
+            
+            logger.debug(f"[LLMOutputParser] JSON 解析成功: prompt={prompt[:50]}..., style={validated_style}")
+            return prompt, validated_style
+            
+        except json.JSONDecodeError:
+            # 尝试从文本中提取 JSON
+            json_match = LLMOutputParser._extract_json_from_text(llm_output)
+            if json_match:
+                try:
+                    data = json.loads(json_match)
+                    
+                    # 确保解析结果是字典
+                    if not isinstance(data, dict):
+                        logger.warning(f"[LLMOutputParser] 提取的 JSON 不是字典，使用原始输出")
+                        return llm_output, None
+                    
+                    prompt = data.get("prompt", "")
+                    style = data.get("style", None)
+                    validated_style = LLMOutputParser.validate_style(style)
+                    logger.debug(f"[LLMOutputParser] 从文本中提取 JSON 成功: prompt={prompt[:50]}..., style={validated_style}")
+                    return prompt, validated_style
+                except json.JSONDecodeError:
+                    pass
+            
+            # 回退：使用整个输出作为 prompt
+            logger.warning(f"[LLMOutputParser] LLM 输出不是有效 JSON，使用原始输出作为 prompt")
+            return llm_output, None
+    
+    @staticmethod
+    def _extract_json_from_text(text: str) -> Optional[str]:
+        """从文本中提取 JSON 字符串"""
+        # 查找 { 和 } 的位置
+        start = text.find('{')
+        end = text.rfind('}')
+        
+        if start != -1 and end != -1 and end > start:
+            return text[start:end + 1]
+        return None
+    
+    @staticmethod
+    def validate_style(style: Optional[str]) -> Optional[str]:
+        """
+        验证风格是否有效
+        
+        Args:
+            style: 待验证的风格
+            
+        Returns:
+            Optional[str]: 有效的风格或 None
+        """
+        if style is None:
+            return None
+        
+        style_lower = style.lower().strip()
+        if style_lower in LLMOutputParser.VALID_STYLES:
+            return style_lower
+        
+        logger.warning(f"[LLMOutputParser] 无效的风格 '{style}'，返回 None")
+        return None
 
 
 # ===== Prompt生成器 =====
@@ -137,6 +403,76 @@ class PromptGenerator:
             logger.error(f"[PromptGenerator] 生成提示词时出错: {e}", exc_info=True)
             return False, str(e)
 
+    @staticmethod
+    async def generate_prompt_with_style(
+        user_request: str,
+        chat_messages: str,
+        persona: str,
+        selfie_mode: bool,
+        model_config_to_use,
+        custom_system_prompt: str = "",
+    ) -> Tuple[bool, str, Optional[str]]:
+        """
+        使用LLM生成图片提示词和风格判断
+        
+        Args:
+            user_request: 用户的绘图请求
+            chat_messages: 最近的聊天记录
+            persona: 人设信息
+            selfie_mode: 是否为自拍模式
+            model_config_to_use: 使用的模型配置
+            custom_system_prompt: 自定义系统提示词（留空则使用默认）
+            
+        Returns:
+            Tuple[bool, str, Optional[str]]: (是否成功, 生成的提示词或错误信息, 风格)
+        """
+        # 使用自定义提示词或默认提示词
+        base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
+        system_prompt = base_prompt.format(persona=persona)
+        
+        mode_hint = ""
+        if selfie_mode:
+            mode_hint = "\n【自拍模式】请以你的角色身份生成一张自拍照的提示词，风格应为 anime。"
+        
+        user_prompt = f"""## 最近的聊天记录
+{chat_messages}
+
+## 用户的绘图请求
+{user_request}
+{mode_hint}
+
+请根据以上信息，生成适合的图片提示词和风格判断。必须以 JSON 格式输出。"""
+
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+        
+        try:
+            success, response, reasoning, model_name = await llm_api.generate_with_model(
+                prompt=full_prompt,
+                model_config=model_config_to_use,
+                request_type="custom_pic_plugin.prompt_generation",
+                temperature=0.7,
+                max_tokens=500,
+            )
+            
+            if success and response:
+                # 使用 LLMOutputParser 解析响应
+                prompt, style = LLMOutputParser.parse(response)
+                
+                if prompt:
+                    logger.info(f"[PromptGenerator] LLM生成提示词成功，使用模型: {model_name}, 风格: {style}")
+                    return True, prompt, style
+                else:
+                    # 如果解析后 prompt 为空，使用原始响应
+                    logger.warning(f"[PromptGenerator] 解析后 prompt 为空，使用原始响应")
+                    return True, response.strip(), style
+            else:
+                logger.error(f"[PromptGenerator] LLM生成失败: {response}")
+                return False, response or "LLM生成失败", None
+                
+        except Exception as e:
+            logger.error(f"[PromptGenerator] 生成提示词时出错: {e}", exc_info=True)
+            return False, str(e), None
+
 
 # ===== Action组件 =====
 
@@ -190,6 +526,7 @@ class CustomPicAction(BaseAction):
     action_require = [
         "当有人让你画一张图时使用",
         "当有人要求生成自拍照片时使用，设置selfie_mode为true",
+        "如果最近的消息内你发过图片请不要选择此动作"
     ]
     associated_types = ["text", "image"]
 
@@ -197,22 +534,6 @@ class CustomPicAction(BaseAction):
         """执行图片生成动作"""
         logger.info(f"{self.log_prefix} 执行图片生成动作")
 
-        # 配置验证
-        api_type = self.get_config("api.api_type", "openai")
-        http_base_url = self.get_config("api.base_url")
-        http_api_key = self.get_config("api.api_key", "")
-
-        # 检查 base_url 是否配置
-        if not http_base_url:
-            logger.error(f"{self.log_prefix} API配置缺失: base_url 未配置")
-            return False, "API base_url 未配置"
-
-        # OpenAI 格式需要检查 api_key，Gradio 格式不需要
-        if api_type.lower() != "gradio":
-            if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
-                logger.error(f"{self.log_prefix} API密钥未配置")
-                return False, "API密钥未配置"
-        
         # 获取用户请求
         original_description = self.action_data.get("description", "")
         if not original_description:
@@ -242,8 +563,8 @@ class CustomPicAction(BaseAction):
         # 获取自定义系统提示词
         custom_system_prompt = self.get_config("llm.system_prompt", "")
         
-        # 使用LLM生成提示词
-        success, generated_prompt = await PromptGenerator.generate_prompt(
+        # 使用LLM生成提示词（带风格判断）
+        success, generated_prompt, llm_style = await PromptGenerator.generate_prompt_with_style(
             user_request=original_description or "根据聊天内容生成一张合适的图片",
             chat_messages=chat_messages_str,
             persona=persona,
@@ -256,22 +577,77 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} 生成提示词失败: {generated_prompt}")
             return False, f"提示词生成失败: {generated_prompt}"
         
-        logger.info(f"{self.log_prefix} LLM生成的提示词: {generated_prompt[:200]}...")
+        logger.info(f"{self.log_prefix} LLM生成的提示词: {generated_prompt[:200]}..., 风格: {llm_style}")
         
         # 构建最终提示词
         final_prompt = self._build_final_prompt(generated_prompt)
         logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
 
-        # 获取图片生成配置
-        api_type = self.get_config("api.api_type", "openai")
-        default_model = self.get_config("generation.default_model", "gpt-image-1")
-        image_size = self.get_config("generation.default_size", "")
+        # 创建风格路由器并决定使用哪个模型
+        style_router = StyleRouter(self.config)
+        selected_style, model_config, route_reason = style_router.route(
+            selfie_mode=selfie_mode,
+            manual_style=None,  # Action 模式不支持手动指定风格
+            llm_style=llm_style,
+        )
+        
+        logger.info(f"{self.log_prefix} 风格路由结果: style={selected_style}, reason={route_reason}")
+        
+        # 检查是否有可用的模型配置
+        if model_config is None:
+            # 回退到旧的配置方式（向后兼容）
+            logger.warning(f"{self.log_prefix} 没有配置风格模型，使用旧的 api 配置")
+            api_type = self.get_config("api.api_type", "openai")
+            http_base_url = self.get_config("api.base_url")
+            http_api_key = self.get_config("api.api_key", "")
+            default_model = self.get_config("generation.default_model", "gpt-image-1")
+            image_size = self.get_config("generation.default_size", "")
+            
+            # 检查 base_url 是否配置
+            if not http_base_url:
+                logger.error(f"{self.log_prefix} API配置缺失: base_url 未配置")
+                return False, "API base_url 未配置"
+
+            # OpenAI 格式需要检查 api_key，Gradio 格式不需要
+            if api_type.lower() != "gradio":
+                if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
+                    logger.error(f"{self.log_prefix} API密钥未配置")
+                    return False, "API密钥未配置"
+        else:
+            # 使用风格模型配置
+            api_type = model_config.get("api_type", "openai")
+            http_base_url = model_config.get("base_url", "")
+            http_api_key = model_config.get("api_key", "")
+            default_model = model_config.get("model_name", "")
+            image_size = self.get_config("generation.default_size", "")
+            
+            # 检查 base_url 是否配置
+            if not http_base_url:
+                logger.error(f"{self.log_prefix} {selected_style} 模型的 base_url 未配置")
+                return False, f"{selected_style} 模型的 base_url 未配置"
+
+            # OpenAI 格式需要检查 api_key，Gradio 格式不需要
+            if api_type.lower() != "gradio":
+                if not http_api_key or not http_api_key.strip():
+                    logger.error(f"{self.log_prefix} {selected_style} 模型的 API密钥未配置")
+                    return False, f"{selected_style} 模型的 API密钥未配置"
 
         try:
             if api_type.lower() == "gradio":
+                # 使用风格模型的 Gradio 参数
+                gradio_params = None
+                if model_config:
+                    gradio_params = {
+                        "resolution": model_config.get("gradio_resolution", "1024x1024 ( 1:1 )"),
+                        "steps": model_config.get("gradio_steps", 8),
+                        "shift": model_config.get("gradio_shift", 3),
+                        "timeout": model_config.get("gradio_timeout", 120),
+                    }
                 success, result = await asyncio.to_thread(
                     self._make_gradio_image_request,
                     prompt=final_prompt,
+                    base_url=http_base_url,
+                    gradio_params=gradio_params,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -279,6 +655,8 @@ class CustomPicAction(BaseAction):
                     prompt=final_prompt,
                     model=default_model,
                     size=image_size if image_size else None,
+                    base_url=http_base_url,
+                    api_key=http_api_key,
                 )
         except Exception as e:
             logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
@@ -527,13 +905,27 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} 图片裁切失败: {e}", exc_info=True)
             return image_bytes
 
-    def _make_gradio_image_request(self, prompt: str) -> Tuple[bool, str]:
+    def _make_gradio_image_request(
+        self, 
+        prompt: str, 
+        base_url: Optional[str] = None,
+        gradio_params: Optional[dict] = None
+    ) -> Tuple[bool, str]:
         """发送Gradio API请求生成图片（如HuggingFace Space）"""
-        base_url = self.get_config("api.base_url", "")
-        resolution = self.get_config("generation.gradio_resolution", "1024x1024 ( 1:1 )")
-        steps = self.get_config("generation.gradio_steps", 8)
-        shift = self.get_config("generation.gradio_shift", 3)
-        timeout = self.get_config("generation.gradio_timeout", 120)
+        # 使用传入的参数或从配置获取
+        if base_url is None:
+            base_url = self.get_config("api.base_url", "")
+        
+        if gradio_params:
+            resolution = gradio_params.get("resolution", "1024x1024 ( 1:1 )")
+            steps = gradio_params.get("steps", 8)
+            shift = gradio_params.get("shift", 3)
+            timeout = gradio_params.get("timeout", 120)
+        else:
+            resolution = self.get_config("generation.gradio_resolution", "1024x1024 ( 1:1 )")
+            steps = self.get_config("generation.gradio_steps", 8)
+            shift = self.get_config("generation.gradio_shift", 3)
+            timeout = self.get_config("generation.gradio_timeout", 120)
         
         # 第一步：POST 请求获取 event_id
         endpoint = f"{base_url.rstrip('/')}/gradio_api/call/generate"
@@ -628,13 +1020,21 @@ class CustomPicAction(BaseAction):
             return False, str(e)
 
     def _make_http_image_request(
-        self, prompt: str, model: str, size: Optional[str] = None
+        self, 
+        prompt: str, 
+        model: str, 
+        size: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None
     ) -> Tuple[bool, str]:
         """发送HTTP请求生成图片（使用chat/completions端点）"""
         import re
         
-        base_url = self.get_config("api.base_url", "")
-        api_key = self.get_config("api.api_key", "")
+        # 使用传入的参数或从配置获取
+        if base_url is None:
+            base_url = self.get_config("api.base_url", "")
+        if api_key is None:
+            api_key = self.get_config("api.api_key", "")
 
         endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
@@ -700,49 +1100,122 @@ class DirectPicCommand(BaseCommand):
     """直接生成图片的指令，跳过LLM提示词生成"""
 
     command_name = "direct_pic"
-    command_description = "直接使用提供的prompt生成图片，不经过LLM处理"
-    command_pattern = r"^/pic\s+(?P<prompt>.+)$"
+    command_description = "直接使用提供的prompt生成图片，不经过LLM处理。支持 /pic anime <prompt> 或 /pic real <prompt> 指定风格"
+    # 支持 /pic <prompt>, /pic anime <prompt>, /pic real <prompt>
+    command_pattern = r"^/pic\s+(?:(?P<style>anime|real)\s+)?(?P<prompt>.+)$"
 
     def __init__(self, message: MessageRecv, plugin_config: Optional[dict] = None):
         super().__init__(message, plugin_config)
         self.log_prefix = "[DirectPic]"
 
+    @staticmethod
+    def parse_style_from_prompt(prompt: str) -> Tuple[Optional[str], str]:
+        """
+        从 prompt 中解析风格前缀
+        
+        Args:
+            prompt: 原始 prompt
+            
+        Returns:
+            Tuple[Optional[str], str]: (style, remaining_prompt)
+        """
+        prompt = prompt.strip()
+        lower_prompt = prompt.lower()
+        
+        # 检查是否以 anime 或 real 开头
+        for style in ["anime", "real"]:
+            if lower_prompt.startswith(style + " "):
+                remaining = prompt[len(style):].strip()
+                return style, remaining
+        
+        return None, prompt
+
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """执行直接图片生成"""
-        # 获取用户输入的prompt
-        prompt = self.matched_groups.get("prompt", "").strip()
+        # 获取用户输入的prompt和风格
+        raw_prompt = self.matched_groups.get("prompt", "").strip()
+        manual_style = self.matched_groups.get("style")
         
-        if not prompt:
-            await self.send_text("请提供图片描述，例如: /pic a cute cat")
+        if not raw_prompt:
+            await self.send_text("请提供图片描述，例如: /pic a cute cat 或 /pic anime 一个可爱的女孩")
             return True, None, True
         
-        logger.info(f"{self.log_prefix} 收到直接生图指令，prompt: {prompt[:100]}...")
+        # 如果正则没有匹配到风格，尝试从 prompt 中解析
+        if not manual_style:
+            manual_style, raw_prompt = self.parse_style_from_prompt(raw_prompt)
         
-        # 配置验证
-        api_type = self.get_config("api.api_type", "openai")
-        http_base_url = self.get_config("api.base_url")
-        http_api_key = self.get_config("api.api_key", "")
-
-        if not http_base_url:
-            await self.send_text("API配置错误：base_url 未配置")
-            return False, None, True
-
-        if api_type.lower() != "gradio":
-            if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
-                await self.send_text("API配置错误：api_key 未配置")
+        logger.info(f"{self.log_prefix} 收到直接生图指令，style: {manual_style}, prompt: {raw_prompt[:100]}...")
+        
+        # 创建风格路由器
+        style_router = StyleRouter(self.config)
+        
+        # 路由到对应的模型
+        selected_style, model_config, route_reason = style_router.route(
+            selfie_mode=False,
+            manual_style=manual_style,
+            llm_style=None,
+        )
+        
+        logger.info(f"{self.log_prefix} 风格路由结果: style={selected_style}, reason={route_reason}")
+        
+        # 检查是否有可用的模型配置
+        if model_config is None:
+            # 回退到旧的配置方式（向后兼容）
+            logger.warning(f"{self.log_prefix} 没有配置风格模型，使用旧的 api 配置")
+            api_type = self.get_config("api.api_type", "openai")
+            http_base_url = self.get_config("api.base_url")
+            http_api_key = self.get_config("api.api_key", "")
+            default_model = self.get_config("generation.default_model", "gpt-image-1")
+            
+            if not http_base_url:
+                await self.send_text("API配置错误：base_url 未配置")
                 return False, None, True
+
+            if api_type.lower() != "gradio":
+                if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
+                    await self.send_text("API配置错误：api_key 未配置")
+                    return False, None, True
+            
+            gradio_params = None
+        else:
+            # 使用风格模型配置
+            api_type = model_config.get("api_type", "openai")
+            http_base_url = model_config.get("base_url", "")
+            http_api_key = model_config.get("api_key", "")
+            default_model = model_config.get("model_name", "")
+            
+            # 检查配置
+            if not http_base_url:
+                # 检查手动指定的风格是否可用
+                if manual_style and not style_router.is_style_available(manual_style):
+                    available = style_router.get_available_styles()
+                    await self.send_text(f"{manual_style} 风格未配置。可用风格: {', '.join(available) if available else '无'}")
+                    return False, None, True
+                await self.send_text(f"{selected_style} 模型的 base_url 未配置")
+                return False, None, True
+
+            if api_type.lower() != "gradio":
+                if not http_api_key or not http_api_key.strip():
+                    await self.send_text(f"{selected_style} 模型的 API密钥未配置")
+                    return False, None, True
+            
+            gradio_params = {
+                "resolution": model_config.get("gradio_resolution", "1024x1024 ( 1:1 )"),
+                "steps": model_config.get("gradio_steps", 8),
+                "shift": model_config.get("gradio_shift", 3),
+                "timeout": model_config.get("gradio_timeout", 120),
+            }
 
         # 添加全局附加提示词
         custom_prompt_add = self.get_config("generation.custom_prompt_add", "")
         if custom_prompt_add and custom_prompt_add.strip():
-            final_prompt = f"{custom_prompt_add.strip()}, {prompt}"
+            final_prompt = f"{custom_prompt_add.strip()}, {raw_prompt}"
         else:
-            final_prompt = prompt
+            final_prompt = raw_prompt
         
         logger.info(f"{self.log_prefix} 最终提示词: {final_prompt[:200]}...")
 
-        # 获取图片生成配置
-        default_model = self.get_config("generation.default_model", "gpt-image-1")
+        # 获取图片尺寸配置
         image_size = self.get_config("generation.default_size", "")
 
         try:
@@ -750,6 +1223,8 @@ class DirectPicCommand(BaseCommand):
                 success, result = await asyncio.to_thread(
                     self._make_gradio_image_request,
                     prompt=final_prompt,
+                    base_url=http_base_url,
+                    gradio_params=gradio_params,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -757,6 +1232,8 @@ class DirectPicCommand(BaseCommand):
                     prompt=final_prompt,
                     model=default_model,
                     size=image_size if image_size else None,
+                    base_url=http_base_url,
+                    api_key=http_api_key,
                 )
         except Exception as e:
             logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
@@ -1056,34 +1533,11 @@ class CustomPicPlugin(BasePlugin):
                 description="是否启用插件"
             ),
         },
-        "api": {
-            "api_type": ConfigField(
-                type=str,
-                default="openai",
-                description="API类型：openai（OpenAI兼容格式）或 gradio（Gradio格式，如HuggingFace Space）",
-            ),
-            "base_url": ConfigField(
-                type=str,
-                default="https://api.openai.com/v1",
-                description="图片生成API的基础URL",
-            ),
-            "api_key": ConfigField(
-                type=str,                 
-                default="YOUR_API_KEY_HERE",
-                description="图片生成API密钥（Gradio API可留空）", 
-                required=False
-            ),
-        },
         "generation": {
-            "default_model": ConfigField(
+            "default_style": ConfigField(
                 type=str,
-                default="gpt-image-1",
-                description="图片生成模型（如 gpt-image-1, grok-2-image 等自然语言生图模型）",
-            ),
-            "default_size": ConfigField(
-                type=str,
-                default="",
-                description="图片尺寸（留空则由生图模型自动决定）",
+                default="anime",
+                description="默认风格：anime（二次元）或 real（写实）"
             ),
             "custom_prompt_add": ConfigField(
                 type=str,
@@ -1105,25 +1559,101 @@ class CustomPicPlugin(BasePlugin):
                 default=40,
                 description="裁切像素数"
             ),
+        },
+        "anime": {
+            "enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="是否启用 anime（二次元）风格的独立模型配置。如果不启用，将使用 [api] 节的配置"
+            ),
+            "api_type": ConfigField(
+                type=str,
+                default="gradio",
+                description="API类型：openai 或 gradio"
+            ),
+            "base_url": ConfigField(
+                type=str,
+                default="https://tongyi-mai-z-image-turbo.hf.space",
+                description="API 基础 URL"
+            ),
+            "api_key": ConfigField(
+                type=str,
+                default="",
+                description="API 密钥（Gradio 可留空）",
+                required=False
+            ),
+            "model_name": ConfigField(
+                type=str,
+                default="",
+                description="模型名称（OpenAI 格式需要）"
+            ),
             "gradio_resolution": ConfigField(
                 type=str,
                 default="1024x1024 ( 1:1 )",
-                description="Gradio API 图片分辨率（仅当 api_type=gradio 时生效）"
+                description="Gradio 图片分辨率"
             ),
             "gradio_steps": ConfigField(
                 type=int,
                 default=8,
-                description="Gradio API 推理步数（仅当 api_type=gradio 时生效）"
+                description="Gradio 推理步数"
             ),
             "gradio_shift": ConfigField(
                 type=int,
                 default=3,
-                description="Gradio API 时间偏移参数（仅当 api_type=gradio 时生效）"
+                description="Gradio 时间偏移参数"
             ),
             "gradio_timeout": ConfigField(
                 type=int,
                 default=120,
-                description="Gradio API 轮询超时时间（秒）"
+                description="Gradio 轮询超时时间（秒）"
+            ),
+        },
+        "real": {
+            "enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="是否启用 real（写实）模型"
+            ),
+            "api_type": ConfigField(
+                type=str,
+                default="openai",
+                description="API类型：openai 或 gradio"
+            ),
+            "base_url": ConfigField(
+                type=str,
+                default="",
+                description="API 基础 URL"
+            ),
+            "api_key": ConfigField(
+                type=str,
+                default="",
+                description="API 密钥",
+                required=False
+            ),
+            "model_name": ConfigField(
+                type=str,
+                default="gpt-image-1",
+                description="模型名称"
+            ),
+            "gradio_resolution": ConfigField(
+                type=str,
+                default="1024x1024 ( 1:1 )",
+                description="Gradio 图片分辨率"
+            ),
+            "gradio_steps": ConfigField(
+                type=int,
+                default=8,
+                description="Gradio 推理步数"
+            ),
+            "gradio_shift": ConfigField(
+                type=int,
+                default=3,
+                description="Gradio 时间偏移参数"
+            ),
+            "gradio_timeout": ConfigField(
+                type=int,
+                default=120,
+                description="Gradio 轮询超时时间（秒）"
             ),
         },
         "llm": {
