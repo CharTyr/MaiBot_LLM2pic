@@ -367,7 +367,8 @@ class PromptGenerator:
         """
         # 使用自定义提示词或默认提示词
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
-        system_prompt = base_prompt.format(persona=persona)
+        # 使用 replace 而不是 format，避免误解析其他花括号（如 {{{character:xxx}}}）
+        system_prompt = base_prompt.replace("{persona}", persona)
         
         mode_hint = ""
         if selfie_mode:
@@ -437,7 +438,8 @@ class PromptGenerator:
         """
         # 使用自定义提示词或默认提示词
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
-        system_prompt = base_prompt.format(persona=persona)
+        # 使用 replace 而不是 format，避免误解析其他花括号（如 {{{character:xxx}}}）
+        system_prompt = base_prompt.replace("{persona}", persona)
         
         mode_hint = ""
         if selfie_mode:
