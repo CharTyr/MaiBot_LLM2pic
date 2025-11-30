@@ -591,7 +591,7 @@ class CustomPicAction(BaseAction):
         logger.info(f"{self.log_prefix} LLM生成的提示词: {generated_prompt[:200]}..., 风格: {llm_style}")
 
         # 创建风格路由器并决定使用哪个模型
-        style_router = StyleRouter(self.config)
+        style_router = StyleRouter(self.plugin_config)
         selected_style, model_config, route_reason = style_router.route(
             selfie_mode=selfie_mode,
             manual_style=None,  # Action 模式不支持手动指定风格
@@ -1264,7 +1264,7 @@ class DirectPicCommand(BaseCommand):
         logger.info(f"{self.log_prefix} 收到直接生图指令，style: {manual_style}, prompt: {raw_prompt[:100]}...")
         
         # 创建风格路由器
-        style_router = StyleRouter(self.config)
+        style_router = StyleRouter(self.plugin_config)
         
         # 路由到对应的模型
         selected_style, model_config, route_reason = style_router.route(
