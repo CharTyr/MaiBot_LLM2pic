@@ -38,15 +38,20 @@ crop_pixels = 40
 # 是否启用此模型
 enabled = true
 
-# API 类型: "openai" 或 "gradio"
+# API 类型: "openai", "gradio", "sd_api" 或 "get_url"
+# - openai: 使用 OpenAI 兼容的 chat/completions 端点
+# - gradio: 使用 Gradio API（如 HuggingFace Space）
+# - sd_api: 使用 Stable Diffusion API
+# - get_url: 使用 GET 请求 + URL 参数的 API（直接返回图片）
 api_type = "gradio"
 
 # API 端点 URL
 # Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
 # OpenAI 示例: "https://api.openai.com/v1"
+# get_url 示例: "https://api.example.com/generate?token=xxx&model=nai-diffusion-3"
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"
 
-# API 密钥（Gradio 类型可留空）
+# API 密钥（Gradio 和 get_url 类型可留空）
 api_key = ""
 
 # 模型名称（仅 OpenAI 类型需要，如 "dall-e-3", "gpt-image-1"）
@@ -66,6 +71,20 @@ gradio_shift = 3
 # 轮询超时时间（秒）
 gradio_timeout = 120
 
+# --- GET URL 专用参数（仅当 api_type = "get_url" 时生效）---
+# prompt 参数名（URL 中用于传递提示词的参数名）
+get_url_prompt_param = "tag"
+
+# 请求超时时间（秒）
+get_url_timeout = 120
+
+# 额外的 URL 参数（会覆盖 base_url 中的同名参数）
+# 示例: 如果 base_url 中有 steps=23，这里设置 steps=28 会覆盖为 28
+[anime.get_url_extra_params]
+# model = "nai-diffusion-4-5-full"
+# size = "横图"
+# steps = 28
+
 # ============================================================
 # Real 模型配置（写实/真实风格）
 # ============================================================
@@ -74,7 +93,7 @@ gradio_timeout = 120
 # 是否启用此模型
 enabled = false
 
-# API 类型: "openai" 或 "gradio"
+# API 类型: "openai", "gradio", "sd_api" 或 "get_url"
 api_type = "openai"
 
 # API 端点 URL
@@ -91,6 +110,13 @@ gradio_resolution = "1024x1024 ( 1:1 )"
 gradio_steps = 8
 gradio_shift = 3
 gradio_timeout = 120
+
+# --- GET URL 专用参数（仅当 api_type = "get_url" 时生效）---
+get_url_prompt_param = "tag"
+get_url_timeout = 120
+
+[real.get_url_extra_params]
+# 在这里添加额外的 URL 参数
 
 # ============================================================
 # LLM 配置（用于生成提示词）

@@ -131,6 +131,10 @@ class StyleRouter:
             "sd_cfg": style_config.get("sd_cfg", 7.0),
             "sd_model_index": style_config.get("sd_model_index", 0),
             "sd_seed": style_config.get("sd_seed", -1),
+            # GET URL API 参数
+            "get_url_prompt_param": style_config.get("get_url_prompt_param", "tag"),
+            "get_url_extra_params": style_config.get("get_url_extra_params", {}),
+            "get_url_timeout": style_config.get("get_url_timeout", 120),
         }
     
     def route(
@@ -619,8 +623,8 @@ class CustomPicAction(BaseAction):
                 logger.error(f"{self.log_prefix} API配置缺失: base_url 未配置")
                 return False, "API base_url 未配置"
 
-            # OpenAI 格式需要检查 api_key，Gradio 格式不需要
-            if api_type.lower() != "gradio":
+            # OpenAI 格式需要检查 api_key，Gradio 和 get_url 格式不需要
+            if api_type.lower() not in ("gradio", "get_url"):
                 if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
                     logger.error(f"{self.log_prefix} API密钥未配置")
                     return False, "API密钥未配置"
@@ -637,8 +641,8 @@ class CustomPicAction(BaseAction):
                 logger.error(f"{self.log_prefix} {selected_style} 模型的 base_url 未配置")
                 return False, f"{selected_style} 模型的 base_url 未配置"
 
-            # OpenAI 格式需要检查 api_key，Gradio 格式不需要
-            if api_type.lower() != "gradio":
+            # OpenAI 格式需要检查 api_key，Gradio 和 get_url 格式不需要
+            if api_type.lower() not in ("gradio", "get_url"):
                 if not http_api_key or not http_api_key.strip():
                     logger.error(f"{self.log_prefix} {selected_style} 模型的 API密钥未配置")
                     return False, f"{selected_style} 模型的 API密钥未配置"
@@ -679,6 +683,21 @@ class CustomPicAction(BaseAction):
                     base_url=http_base_url,
                     api_key=http_api_key,
                     sd_params=sd_params,
+                )
+            elif api_type.lower() == "get_url":
+                # 使用 GET URL API
+                get_url_params = None
+                if model_config:
+                    get_url_params = {
+                        "prompt_param": model_config.get("get_url_prompt_param", "tag"),
+                        "extra_params": model_config.get("get_url_extra_params", {}),
+                        "timeout": model_config.get("get_url_timeout", 120),
+                    }
+                success, result = await asyncio.to_thread(
+                    self._make_get_url_request,
+                    prompt=final_prompt,
+                    base_url=http_base_url,
+                    get_url_params=get_url_params,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -1137,6 +1156,126 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} SD API 请求错误: {e!r}", exc_info=True)
             return False, str(e)
 
+    def _make_get_url_request(
+        self,
+        prompt: str,
+        base_url: str,
+        get_url_params: Optional[dict] = None,
+    ) -> Tuple[bool, str]:
+        """
+        发送 GET URL 请求生成图片
+        
+        适用于通过 URL 参数传递 prompt 并直接返回图片的 API
+        例如: https://api.example.com/generate?tag=prompt&token=xxx
+        
+        Args:
+            prompt: 图片生成提示词
+            base_url: API 基础 URL（包含除 prompt 外的所有参数）
+            get_url_params: 额外参数配置
+                - prompt_param: prompt 参数名（默认 "tag"）
+                - extra_params: 额外的 URL 参数字典
+                - timeout: 请求超时时间（秒）
+        
+        Returns:
+            Tuple[bool, str]: (是否成功, base64编码的图片或错误信息)
+        """
+        import urllib.parse
+        
+        # 解析参数
+        if get_url_params is None:
+            get_url_params = {}
+        
+        prompt_param = get_url_params.get("prompt_param", "tag")
+        extra_params = get_url_params.get("extra_params", {})
+        timeout = get_url_params.get("timeout", 120)
+        
+        # 解析 base_url，分离基础路径和已有参数
+        if "?" in base_url:
+            base_path, query_string = base_url.split("?", 1)
+            # 解析已有的查询参数
+            existing_params = dict(urllib.parse.parse_qsl(query_string))
+        else:
+            base_path = base_url
+            existing_params = {}
+        
+        # 用 extra_params 覆盖已有参数
+        for key, value in extra_params.items():
+            existing_params[key] = str(value)
+        
+        # 设置 prompt 参数
+        encoded_prompt = urllib.parse.quote(prompt, safe='')
+        existing_params[prompt_param] = prompt  # 使用原始值，后面会统一编码
+        
+        # 重新构建查询字符串
+        query_parts = []
+        for key, value in existing_params.items():
+            encoded_key = urllib.parse.quote(str(key), safe='')
+            encoded_value = urllib.parse.quote(str(value), safe='')
+            query_parts.append(f"{encoded_key}={encoded_value}")
+        
+        final_url = f"{base_path}?{'&'.join(query_parts)}"
+        
+        logger.info(f"{self.log_prefix} 发起 GET URL 图片请求, URL: {final_url[:150]}...")
+        
+        try:
+            # 构建请求
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "image/*,*/*",
+            }
+            
+            req = urllib.request.Request(final_url, headers=headers, method="GET")
+            
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                if 200 <= response.status < 300:
+                    # 读取图片数据
+                    image_bytes = response.read()
+                    
+                    # 检查是否是有效的图片数据
+                    content_type = response.headers.get("Content-Type", "")
+                    
+                    if not image_bytes:
+                        return False, "API 返回空数据"
+                    
+                    # 检查是否是图片（通过魔数或 Content-Type）
+                    is_image = (
+                        content_type.startswith("image/") or
+                        image_bytes[:8].startswith(b'\x89PNG') or  # PNG
+                        image_bytes[:2] == b'\xff\xd8' or  # JPEG
+                        image_bytes[:4] == b'RIFF' or  # WebP
+                        image_bytes[:6] in (b'GIF87a', b'GIF89a')  # GIF
+                    )
+                    
+                    if is_image:
+                        # 转换为 base64
+                        base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+                        logger.info(f"{self.log_prefix} GET URL 请求成功，图片大小: {len(image_bytes)} bytes")
+                        return True, base64_encoded
+                    else:
+                        # 可能是错误响应
+                        try:
+                            error_text = image_bytes.decode("utf-8")[:500]
+                            return False, f"API 返回非图片数据: {error_text}"
+                        except UnicodeDecodeError:
+                            return False, f"API 返回未知格式数据 (Content-Type: {content_type})"
+                else:
+                    return False, f"GET URL 请求失败 (状态码 {response.status})"
+                    
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8")[:200]
+            except Exception:
+                pass
+            logger.error(f"{self.log_prefix} GET URL HTTP 错误: {e.code} - {error_body}")
+            return False, f"HTTP 错误 {e.code}: {error_body}"
+        except urllib.error.URLError as e:
+            logger.error(f"{self.log_prefix} GET URL 连接错误: {e.reason}")
+            return False, f"连接错误: {e.reason}"
+        except Exception as e:
+            logger.error(f"{self.log_prefix} GET URL 请求错误: {e!r}", exc_info=True)
+            return False, str(e)
+
     def _make_http_image_request(
         self, 
         prompt: str, 
@@ -1290,13 +1429,14 @@ class DirectPicCommand(BaseCommand):
                 await self.send_text("API配置错误：base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() not in ["gradio"]:
+            if api_type.lower() not in ["gradio", "get_url"]:
                 if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
                     await self.send_text("API配置错误：api_key 未配置")
                     return False, None, True
             
             gradio_params = None
             sd_params = None
+            get_url_params = None
         else:
             # 使用风格模型配置
             api_type = model_config.get("api_type", "openai")
@@ -1314,12 +1454,12 @@ class DirectPicCommand(BaseCommand):
                 await self.send_text(f"{selected_style} 模型的 base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() not in ["gradio", "sd_api"]:
-                if not http_api_key or not http_api_key.strip():
-                    await self.send_text(f"{selected_style} 模型的 API密钥未配置")
-                    return False, None, True
-            elif api_type.lower() == "sd_api":
-                if not http_api_key or not http_api_key.strip():
+            if api_type.lower() not in ["gradio", "get_url"]:
+                if api_type.lower() == "sd_api":
+                    if not http_api_key or not http_api_key.strip():
+                        await self.send_text(f"{selected_style} 模型的 API密钥未配置")
+                        return False, None, True
+                elif not http_api_key or not http_api_key.strip():
                     await self.send_text(f"{selected_style} 模型的 API密钥未配置")
                     return False, None, True
             
@@ -1338,6 +1478,12 @@ class DirectPicCommand(BaseCommand):
                 "cfg": model_config.get("sd_cfg", 7.0),
                 "model_index": model_config.get("sd_model_index", 0),
                 "seed": model_config.get("sd_seed", -1),
+            }
+            
+            get_url_params = {
+                "prompt_param": model_config.get("get_url_prompt_param", "tag"),
+                "extra_params": model_config.get("get_url_extra_params", {}),
+                "timeout": model_config.get("get_url_timeout", 120),
             }
 
         # 优先使用风格特定的附加提示词，否则使用全局附加提示词
@@ -1372,6 +1518,13 @@ class DirectPicCommand(BaseCommand):
                     base_url=http_base_url,
                     api_key=http_api_key,
                     sd_params=sd_params if model_config else None,
+                )
+            elif api_type.lower() == "get_url":
+                success, result = await asyncio.to_thread(
+                    self._make_get_url_request,
+                    prompt=final_prompt,
+                    base_url=http_base_url,
+                    get_url_params=get_url_params if model_config else None,
                 )
             else:
                 success, result = await asyncio.to_thread(
