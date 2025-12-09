@@ -38,20 +38,22 @@ crop_pixels = 40
 # 是否启用此模型
 enabled = true
 
-# API 类型: "openai", "gradio", "sd_api" 或 "get_url"
+# API 类型: "openai", "gradio", "sd_api" 或 "novelai"
 # - openai: 使用 OpenAI 兼容的 chat/completions 端点
 # - gradio: 使用 Gradio API（如 HuggingFace Space）
 # - sd_api: 使用 Stable Diffusion API
-# - get_url: 使用 GET 请求 + URL 参数的 API（直接返回图片）
+# - novelai: 使用 NovelAI 官方 API（需要 NovelAI 订阅）
 api_type = "gradio"
 
 # API 端点 URL
 # Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
 # OpenAI 示例: "https://api.openai.com/v1"
-# get_url 示例: "https://api.example.com/generate?token=xxx&model=nai-diffusion-3"
+# NovelAI: 留空（使用官方端点）
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"
 
-# API 密钥（Gradio 和 get_url 类型可留空）
+# API 密钥
+# - Gradio: 可留空
+# - NovelAI: 填写你的 Bearer Token（从 novelai.net 获取）
 api_key = ""
 
 # 模型名称（仅 OpenAI 类型需要，如 "dall-e-3", "gpt-image-1"）
@@ -71,19 +73,32 @@ gradio_shift = 3
 # 轮询超时时间（秒）
 gradio_timeout = 120
 
-# --- GET URL 专用参数（仅当 api_type = "get_url" 时生效）---
-# prompt 参数名（URL 中用于传递提示词的参数名）
-get_url_prompt_param = "tag"
+# --- NovelAI 官方 API 专用参数（仅当 api_type = "novelai" 时生效）---
+# 使用 NovelAI 官方 API 时，base_url 可留空，api_key 填写你的 NovelAI Bearer Token
+# 模型名称
+novelai_model = "nai-diffusion-4-5-full"
+
+# 图片尺寸（常用: 832x1216 竖图, 1216x832 横图, 1024x1024 方图）
+novelai_width = 832
+novelai_height = 1216
+
+# 推理步数（建议 23-28）
+novelai_steps = 28
+
+# CFG scale（建议 5-7）
+novelai_scale = 5.0
+
+# 采样器（可选: k_euler, k_euler_ancestral, k_dpmpp_2s_ancestral, k_dpmpp_sde 等）
+novelai_sampler = "k_euler"
+
+# 负面提示词
+novelai_negative_prompt = ""
+
+# 随机种子（-1 为随机）
+novelai_seed = -1
 
 # 请求超时时间（秒）
-get_url_timeout = 120
-
-# 额外的 URL 参数（会覆盖 base_url 中的同名参数）
-# 示例: 如果 base_url 中有 steps=23，这里设置 steps=28 会覆盖为 28
-[anime.get_url_extra_params]
-# model = "nai-diffusion-4-5-full"
-# size = "横图"
-# steps = 28
+novelai_timeout = 120
 
 # ============================================================
 # Real 模型配置（写实/真实风格）
@@ -93,7 +108,7 @@ get_url_timeout = 120
 # 是否启用此模型
 enabled = false
 
-# API 类型: "openai", "gradio", "sd_api" 或 "get_url"
+# API 类型: "openai", "gradio", "sd_api" 或 "novelai"
 api_type = "openai"
 
 # API 端点 URL
@@ -111,12 +126,16 @@ gradio_steps = 8
 gradio_shift = 3
 gradio_timeout = 120
 
-# --- GET URL 专用参数（仅当 api_type = "get_url" 时生效）---
-get_url_prompt_param = "tag"
-get_url_timeout = 120
-
-[real.get_url_extra_params]
-# 在这里添加额外的 URL 参数
+# --- NovelAI 官方 API 专用参数（仅当 api_type = "novelai" 时生效）---
+novelai_model = "nai-diffusion-4-5-full"
+novelai_width = 1216
+novelai_height = 832
+novelai_steps = 28
+novelai_scale = 5.0
+novelai_sampler = "k_euler"
+novelai_negative_prompt = ""
+novelai_seed = -1
+novelai_timeout = 120
 
 # ============================================================
 # LLM 配置（用于生成提示词）

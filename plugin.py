@@ -131,10 +131,16 @@ class StyleRouter:
             "sd_cfg": style_config.get("sd_cfg", 7.0),
             "sd_model_index": style_config.get("sd_model_index", 0),
             "sd_seed": style_config.get("sd_seed", -1),
-            # GET URL API 参数
-            "get_url_prompt_param": style_config.get("get_url_prompt_param", "tag"),
-            "get_url_extra_params": style_config.get("get_url_extra_params", {}),
-            "get_url_timeout": style_config.get("get_url_timeout", 120),
+            # NovelAI API 参数
+            "novelai_model": style_config.get("novelai_model", "nai-diffusion-4-5-full"),
+            "novelai_width": style_config.get("novelai_width", 832),
+            "novelai_height": style_config.get("novelai_height", 1216),
+            "novelai_steps": style_config.get("novelai_steps", 28),
+            "novelai_scale": style_config.get("novelai_scale", 5.0),
+            "novelai_sampler": style_config.get("novelai_sampler", "k_euler"),
+            "novelai_negative_prompt": style_config.get("novelai_negative_prompt", ""),
+            "novelai_seed": style_config.get("novelai_seed", -1),
+            "novelai_timeout": style_config.get("novelai_timeout", 120),
         }
     
     def route(
@@ -619,12 +625,13 @@ class CustomPicAction(BaseAction):
             image_size = self.get_config("generation.default_size", "")
             
             # 检查 base_url 是否配置
-            if not http_base_url:
+            # NovelAI 不需要 base_url，其他类型需要
+            if api_type.lower() != "novelai" and not http_base_url:
                 logger.error(f"{self.log_prefix} API配置缺失: base_url 未配置")
                 return False, "API base_url 未配置"
 
-            # OpenAI 格式需要检查 api_key，Gradio 和 get_url 格式不需要
-            if api_type.lower() not in ("gradio", "get_url"):
+            # Gradio 格式不需要 api_key，其他都需要
+            if api_type.lower() != "gradio":
                 if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
                     logger.error(f"{self.log_prefix} API密钥未配置")
                     return False, "API密钥未配置"
@@ -636,13 +643,13 @@ class CustomPicAction(BaseAction):
             default_model = model_config.get("model_name", "")
             image_size = self.get_config("generation.default_size", "")
             
-            # 检查 base_url 是否配置
-            if not http_base_url:
+            # 检查 base_url 是否配置（NovelAI 不需要）
+            if api_type.lower() != "novelai" and not http_base_url:
                 logger.error(f"{self.log_prefix} {selected_style} 模型的 base_url 未配置")
                 return False, f"{selected_style} 模型的 base_url 未配置"
 
-            # OpenAI 格式需要检查 api_key，Gradio 和 get_url 格式不需要
-            if api_type.lower() not in ("gradio", "get_url"):
+            # Gradio 格式不需要 api_key，其他都需要
+            if api_type.lower() != "gradio":
                 if not http_api_key or not http_api_key.strip():
                     logger.error(f"{self.log_prefix} {selected_style} 模型的 API密钥未配置")
                     return False, f"{selected_style} 模型的 API密钥未配置"
@@ -684,20 +691,26 @@ class CustomPicAction(BaseAction):
                     api_key=http_api_key,
                     sd_params=sd_params,
                 )
-            elif api_type.lower() == "get_url":
-                # 使用 GET URL API
-                get_url_params = None
+            elif api_type.lower() == "novelai":
+                # 使用 NovelAI 官方 API
+                novelai_params = None
                 if model_config:
-                    get_url_params = {
-                        "prompt_param": model_config.get("get_url_prompt_param", "tag"),
-                        "extra_params": model_config.get("get_url_extra_params", {}),
-                        "timeout": model_config.get("get_url_timeout", 120),
+                    novelai_params = {
+                        "model": model_config.get("novelai_model", "nai-diffusion-4-5-full"),
+                        "width": model_config.get("novelai_width", 832),
+                        "height": model_config.get("novelai_height", 1216),
+                        "steps": model_config.get("novelai_steps", 28),
+                        "scale": model_config.get("novelai_scale", 5.0),
+                        "sampler": model_config.get("novelai_sampler", "k_euler"),
+                        "negative_prompt": model_config.get("novelai_negative_prompt", ""),
+                        "seed": model_config.get("novelai_seed", -1),
+                        "timeout": model_config.get("novelai_timeout", 120),
                     }
                 success, result = await asyncio.to_thread(
-                    self._make_get_url_request,
+                    self._make_novelai_request,
                     prompt=final_prompt,
-                    base_url=http_base_url,
-                    get_url_params=get_url_params,
+                    api_key=http_api_key,
+                    novelai_params=novelai_params,
                 )
             else:
                 success, result = await asyncio.to_thread(
@@ -1156,124 +1169,155 @@ class CustomPicAction(BaseAction):
             logger.error(f"{self.log_prefix} SD API 请求错误: {e!r}", exc_info=True)
             return False, str(e)
 
-    def _make_get_url_request(
+    def _make_novelai_request(
         self,
         prompt: str,
-        base_url: str,
-        get_url_params: Optional[dict] = None,
+        api_key: str,
+        novelai_params: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
-        发送 GET URL 请求生成图片
-        
-        适用于通过 URL 参数传递 prompt 并直接返回图片的 API
-        例如: https://api.example.com/generate?tag=prompt&token=xxx
+        发送 NovelAI 官方 API 请求生成图片
         
         Args:
             prompt: 图片生成提示词
-            base_url: API 基础 URL（包含除 prompt 外的所有参数）
-            get_url_params: 额外参数配置
-                - prompt_param: prompt 参数名（默认 "tag"）
-                - extra_params: 额外的 URL 参数字典
+            api_key: NovelAI API token (Bearer token)
+            novelai_params: NovelAI 参数配置
+                - model: 模型名称 (默认 "nai-diffusion-4-5-full")
+                - width: 图片宽度 (默认 832)
+                - height: 图片高度 (默认 1216)
+                - steps: 推理步数 (默认 28)
+                - scale: CFG scale (默认 5.0)
+                - sampler: 采样器 (默认 "k_euler")
+                - negative_prompt: 负面提示词
+                - seed: 随机种子 (-1 为随机)
                 - timeout: 请求超时时间（秒）
         
         Returns:
             Tuple[bool, str]: (是否成功, base64编码的图片或错误信息)
         """
-        import urllib.parse
+        import zipfile
+        from io import BytesIO
+        
+        if novelai_params is None:
+            novelai_params = {}
+        
+        # NovelAI API 端点
+        endpoint = "https://image.novelai.net/ai/generate-image"
         
         # 解析参数
-        if get_url_params is None:
-            get_url_params = {}
+        model = novelai_params.get("model", "nai-diffusion-4-5-full")
+        width = novelai_params.get("width", 832)
+        height = novelai_params.get("height", 1216)
+        steps = novelai_params.get("steps", 28)
+        scale = novelai_params.get("scale", 5.0)
+        sampler = novelai_params.get("sampler", "k_euler")
+        negative_prompt = novelai_params.get("negative_prompt", "")
+        seed = novelai_params.get("seed", -1)
+        timeout = novelai_params.get("timeout", 120)
         
-        prompt_param = get_url_params.get("prompt_param", "tag")
-        extra_params = get_url_params.get("extra_params", {})
-        timeout = get_url_params.get("timeout", 120)
+        # 如果 seed 为 -1，生成随机种子
+        import random
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
         
-        # 解析 base_url，分离基础路径和已有参数
-        if "?" in base_url:
-            base_path, query_string = base_url.split("?", 1)
-            # 解析已有的查询参数
-            existing_params = dict(urllib.parse.parse_qsl(query_string))
-        else:
-            base_path = base_url
-            existing_params = {}
+        # 构建请求体
+        payload = {
+            "input": prompt,
+            "model": model,
+            "action": "generate",
+            "parameters": {
+                "width": width,
+                "height": height,
+                "scale": scale,
+                "sampler": sampler,
+                "steps": steps,
+                "seed": seed,
+                "n_samples": 1,
+                "negative_prompt": negative_prompt,
+                "noise_schedule": "karras",
+                "qualityToggle": True,
+                "ucPreset": 0,
+            }
+        }
         
-        # 用 extra_params 覆盖已有参数
-        for key, value in extra_params.items():
-            existing_params[key] = str(value)
+        # 根据模型调整参数
+        if "nai-diffusion-4" in model:
+            # NAI v4 模型特定参数
+            payload["parameters"]["cfg_rescale"] = 0
+            payload["parameters"]["noise_schedule"] = "karras"
         
-        # 设置 prompt 参数
-        encoded_prompt = urllib.parse.quote(prompt, safe='')
-        existing_params[prompt_param] = prompt  # 使用原始值，后面会统一编码
+        data = json.dumps(payload).encode("utf-8")
         
-        # 重新构建查询字符串
-        query_parts = []
-        for key, value in existing_params.items():
-            encoded_key = urllib.parse.quote(str(key), safe='')
-            encoded_value = urllib.parse.quote(str(value), safe='')
-            query_parts.append(f"{encoded_key}={encoded_value}")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/zip, image/*",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
         
-        final_url = f"{base_path}?{'&'.join(query_parts)}"
+        logger.info(f"{self.log_prefix} 发起 NovelAI 图片请求, model={model}, prompt={prompt[:80]}...")
         
-        logger.info(f"{self.log_prefix} 发起 GET URL 图片请求, URL: {final_url[:150]}...")
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
         
         try:
-            # 构建请求
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "image/*,*/*",
-            }
-            
-            req = urllib.request.Request(final_url, headers=headers, method="GET")
-            
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 if 200 <= response.status < 300:
-                    # 读取图片数据
-                    image_bytes = response.read()
-                    
-                    # 检查是否是有效的图片数据
+                    response_data = response.read()
                     content_type = response.headers.get("Content-Type", "")
                     
-                    if not image_bytes:
-                        return False, "API 返回空数据"
-                    
-                    # 检查是否是图片（通过魔数或 Content-Type）
-                    is_image = (
-                        content_type.startswith("image/") or
-                        image_bytes[:8].startswith(b'\x89PNG') or  # PNG
-                        image_bytes[:2] == b'\xff\xd8' or  # JPEG
-                        image_bytes[:4] == b'RIFF' or  # WebP
-                        image_bytes[:6] in (b'GIF87a', b'GIF89a')  # GIF
-                    )
-                    
-                    if is_image:
-                        # 转换为 base64
-                        base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
-                        logger.info(f"{self.log_prefix} GET URL 请求成功，图片大小: {len(image_bytes)} bytes")
-                        return True, base64_encoded
-                    else:
-                        # 可能是错误响应
+                    # NovelAI 返回 zip 文件，需要解压
+                    if "zip" in content_type or response_data[:4] == b'PK\x03\x04':
                         try:
-                            error_text = image_bytes.decode("utf-8")[:500]
-                            return False, f"API 返回非图片数据: {error_text}"
+                            with zipfile.ZipFile(BytesIO(response_data)) as zf:
+                                # 获取 zip 中的第一个文件（图片）
+                                file_list = zf.namelist()
+                                if file_list:
+                                    image_bytes = zf.read(file_list[0])
+                                    base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+                                    logger.info(f"{self.log_prefix} NovelAI 请求成功，图片大小: {len(image_bytes)} bytes")
+                                    return True, base64_encoded
+                                else:
+                                    return False, "NovelAI 返回的 zip 文件为空"
+                        except zipfile.BadZipFile:
+                            return False, "NovelAI 返回的不是有效的 zip 文件"
+                    
+                    # 如果直接返回图片
+                    elif content_type.startswith("image/") or response_data[:8].startswith(b'\x89PNG') or response_data[:2] == b'\xff\xd8':
+                        base64_encoded = base64.b64encode(response_data).decode("utf-8")
+                        logger.info(f"{self.log_prefix} NovelAI 请求成功，图片大小: {len(response_data)} bytes")
+                        return True, base64_encoded
+                    
+                    else:
+                        try:
+                            error_text = response_data.decode("utf-8")[:500]
+                            return False, f"NovelAI 返回未知格式: {error_text}"
                         except UnicodeDecodeError:
-                            return False, f"API 返回未知格式数据 (Content-Type: {content_type})"
+                            return False, f"NovelAI 返回未知格式 (Content-Type: {content_type})"
                 else:
-                    return False, f"GET URL 请求失败 (状态码 {response.status})"
+                    return False, f"NovelAI 请求失败 (状态码 {response.status})"
                     
         except urllib.error.HTTPError as e:
             error_body = ""
             try:
-                error_body = e.read().decode("utf-8")[:200]
+                error_body = e.read().decode("utf-8")[:300]
             except Exception:
                 pass
-            logger.error(f"{self.log_prefix} GET URL HTTP 错误: {e.code} - {error_body}")
-            return False, f"HTTP 错误 {e.code}: {error_body}"
+            logger.error(f"{self.log_prefix} NovelAI HTTP 错误: {e.code} - {error_body}")
+            
+            # 解析常见错误
+            if e.code == 401:
+                return False, "NovelAI 认证失败，请检查 API token"
+            elif e.code == 402:
+                return False, "NovelAI 配额不足，请充值 Anlas"
+            elif e.code == 429:
+                return False, "NovelAI 请求过于频繁，请稍后重试"
+            else:
+                return False, f"NovelAI HTTP 错误 {e.code}: {error_body}"
         except urllib.error.URLError as e:
-            logger.error(f"{self.log_prefix} GET URL 连接错误: {e.reason}")
+            logger.error(f"{self.log_prefix} NovelAI 连接错误: {e.reason}")
             return False, f"连接错误: {e.reason}"
         except Exception as e:
-            logger.error(f"{self.log_prefix} GET URL 请求错误: {e!r}", exc_info=True)
+            logger.error(f"{self.log_prefix} NovelAI 请求错误: {e!r}", exc_info=True)
             return False, str(e)
 
     def _make_http_image_request(
@@ -1425,18 +1469,20 @@ class DirectPicCommand(BaseCommand):
             http_api_key = self.get_config("api.api_key", "")
             default_model = self.get_config("generation.default_model", "gpt-image-1")
             
-            if not http_base_url:
+            # NovelAI 不需要 base_url
+            if api_type.lower() != "novelai" and not http_base_url:
                 await self.send_text("API配置错误：base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() not in ["gradio", "get_url"]:
+            # Gradio 不需要 api_key
+            if api_type.lower() != "gradio":
                 if not http_api_key or http_api_key == "YOUR_API_KEY_HERE" or not http_api_key.strip():
                     await self.send_text("API配置错误：api_key 未配置")
                     return False, None, True
             
             gradio_params = None
             sd_params = None
-            get_url_params = None
+            novelai_params = None
         else:
             # 使用风格模型配置
             api_type = model_config.get("api_type", "openai")
@@ -1444,8 +1490,8 @@ class DirectPicCommand(BaseCommand):
             http_api_key = model_config.get("api_key", "")
             default_model = model_config.get("model_name", "")
             
-            # 检查配置
-            if not http_base_url:
+            # 检查配置（NovelAI 不需要 base_url）
+            if api_type.lower() != "novelai" and not http_base_url:
                 # 检查手动指定的风格是否可用
                 if manual_style and not style_router.is_style_available(manual_style):
                     available = style_router.get_available_styles()
@@ -1454,12 +1500,9 @@ class DirectPicCommand(BaseCommand):
                 await self.send_text(f"{selected_style} 模型的 base_url 未配置")
                 return False, None, True
 
-            if api_type.lower() not in ["gradio", "get_url"]:
-                if api_type.lower() == "sd_api":
-                    if not http_api_key or not http_api_key.strip():
-                        await self.send_text(f"{selected_style} 模型的 API密钥未配置")
-                        return False, None, True
-                elif not http_api_key or not http_api_key.strip():
+            # Gradio 不需要 api_key
+            if api_type.lower() != "gradio":
+                if not http_api_key or not http_api_key.strip():
                     await self.send_text(f"{selected_style} 模型的 API密钥未配置")
                     return False, None, True
             
@@ -1480,10 +1523,16 @@ class DirectPicCommand(BaseCommand):
                 "seed": model_config.get("sd_seed", -1),
             }
             
-            get_url_params = {
-                "prompt_param": model_config.get("get_url_prompt_param", "tag"),
-                "extra_params": model_config.get("get_url_extra_params", {}),
-                "timeout": model_config.get("get_url_timeout", 120),
+            novelai_params = {
+                "model": model_config.get("novelai_model", "nai-diffusion-4-5-full"),
+                "width": model_config.get("novelai_width", 832),
+                "height": model_config.get("novelai_height", 1216),
+                "steps": model_config.get("novelai_steps", 28),
+                "scale": model_config.get("novelai_scale", 5.0),
+                "sampler": model_config.get("novelai_sampler", "k_euler"),
+                "negative_prompt": model_config.get("novelai_negative_prompt", ""),
+                "seed": model_config.get("novelai_seed", -1),
+                "timeout": model_config.get("novelai_timeout", 120),
             }
 
         # 优先使用风格特定的附加提示词，否则使用全局附加提示词
@@ -1519,12 +1568,12 @@ class DirectPicCommand(BaseCommand):
                     api_key=http_api_key,
                     sd_params=sd_params if model_config else None,
                 )
-            elif api_type.lower() == "get_url":
+            elif api_type.lower() == "novelai":
                 success, result = await asyncio.to_thread(
-                    self._make_get_url_request,
+                    self._make_novelai_request,
                     prompt=final_prompt,
-                    base_url=http_base_url,
-                    get_url_params=get_url_params if model_config else None,
+                    api_key=http_api_key,
+                    novelai_params=novelai_params if model_config else None,
                 )
             else:
                 success, result = await asyncio.to_thread(
