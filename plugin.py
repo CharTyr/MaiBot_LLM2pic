@@ -2,6 +2,7 @@
 MaiBot_LLM2pic - MaiBot图片生成插件
 
 使用LLM根据聊天记录和人设生成符合需求的prompt，然后调用图片生成API
+支持文生图和图生图功能
 """
 
 import asyncio
@@ -27,6 +28,57 @@ from src.plugin_system.base.base_command import BaseCommand
 from src.chat.message_receive.message import MessageRecv
 from src.config.config import global_config, model_config
 from src.common.logger import get_logger
+
+
+# ===== 图片工具函数 =====
+
+def download_image_to_base64(url: str, timeout: int = 60) -> Tuple[bool, str]:
+    """
+    下载图片并转换为 base64
+    
+    Args:
+        url: 图片 URL
+        timeout: 超时时间（秒）
+        
+    Returns:
+        Tuple[bool, str]: (是否成功, base64数据或错误信息)
+    """
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                image_bytes = response.read()
+                base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+                return True, base64_encoded
+            else:
+                return False, f"下载失败 (状态: {response.status})"
+    except Exception as e:
+        return False, str(e)
+
+
+def get_image_mime_type(base64_data: str) -> str:
+    """
+    根据 base64 数据判断图片 MIME 类型
+    
+    Args:
+        base64_data: base64 编码的图片数据
+        
+    Returns:
+        str: MIME 类型
+    """
+    if base64_data.startswith("iVBORw"):
+        return "image/png"
+    elif base64_data.startswith("/9j/"):
+        return "image/jpeg"
+    elif base64_data.startswith("UklGR"):
+        return "image/webp"
+    elif base64_data.startswith("R0lGOD"):
+        return "image/gif"
+    else:
+        return "image/png"  # 默认
 
 logger = get_logger("MaiBot_LLM2pic")
 
@@ -511,27 +563,37 @@ class CustomPicAction(BaseAction):
 
     # LLM判定提示词
     llm_judge_prompt = """
-此动作让你能够生成并发送图片，用于回应群友想要"看到"某些视觉内容的请求。
+此动作让你能够生成并发送图片，用于回应群友想要"看到"某些视觉内容的请求。支持文生图和图生图。
 
-【触发条件】当群友想要看到以下内容时使用：
+【触发条件 - 文生图】当群友想要看到以下内容时使用：
 1. 你当前的状态/环境/正在做的事（自拍、你在哪、你在干嘛）
 2. 你拍的照片/摄影作品（发张你拍的照片、看看你的摄影）
 3. 你正在吃/喝/用的东西（你在吃什么、给我看看）
 4. 你画的画/创作的图（画一张、帮我画个）
 5. 某个具体场景/角色/事物的图片（我想看看...的样子）
 
+【触发条件 - 图生图】当群友发送图片并要求修改时使用（设置use_input_image=true）：
+1. 用户发送图片并要求修改/编辑/重绘/变换风格
+2. 用户发送图片并说"把这张图变成..."
+3. 用户发送图片并要求添加/删除/修改图片中的元素
+
 【典型触发语句示例】
+文生图：
 - "自拍/来张自拍/发张照片看看"
 - "你现在在哪/在干嘛，发张图看看"
-- "你在吃什么/喝什么，给我看看"
-- "发张你拍的照片/看看你的摄影作品"
 - "画一张.../帮我画个..."
 - "我想看看...长什么样"
+
+图生图（需设置use_input_image=true）：
+- [图片] "把这张图变成动漫风格"
+- [图片] "帮我修改一下这张图"
+- [图片] "给这张图加上..."
+- [图片] "重绘这张图"
 
 【禁止触发】
 - 纯文字聊天、问答、讨论（不涉及"看图"需求）
 - 只是提到图片相关词汇但不是要求生成
-- 讨论或评价已经存在的图片
+- 讨论或评价已经存在的图片（不要求修改）
 - 用户明确表示不需要图片
 - 并不是对你提出的看图需求
 - 前面聊天记录中你已经发过图片时，禁止再次生成并发送图片
@@ -541,12 +603,14 @@ class CustomPicAction(BaseAction):
     action_parameters = {
         "description": "用户想要生成的图片描述，可以是中文或英文，系统会自动处理",
         "selfie_mode": "是否生成自拍模式的图片，设置为true时会以角色身份生成自拍，默认为false",
+        "use_input_image": "是否使用用户发送的图片进行图生图，设置为true时会提取消息中的图片作为输入，默认为false",
     }
 
     # 动作使用场景
     action_require = [
         "当有人让你画一张图时使用",
         "当有人要求生成自拍照片时使用，设置selfie_mode为true",
+        "当用户发送图片并要求修改/编辑/重绘时，设置use_input_image为true",
         "如果最近的消息内你发过图片请不要选择此动作"
     ]
     associated_types = ["text", "image"]
@@ -565,6 +629,20 @@ class CustomPicAction(BaseAction):
         selfie_mode = self.action_data.get("selfie_mode", False)
         if isinstance(selfie_mode, str):
             selfie_mode = selfie_mode.lower() in ['true', '1', 'yes', 'on']
+        
+        # 检查是否使用输入图片（图生图模式）
+        use_input_image = self.action_data.get("use_input_image", False)
+        if isinstance(use_input_image, str):
+            use_input_image = use_input_image.lower() in ['true', '1', 'yes', 'on']
+        
+        # 提取输入图片
+        input_image_base64 = None
+        if use_input_image:
+            input_image_base64 = await self._extract_input_image()
+            if input_image_base64:
+                logger.info(f"{self.log_prefix} 已提取输入图片，将进行图生图")
+            else:
+                logger.warning(f"{self.log_prefix} 未找到输入图片，将进行文生图")
 
         # 获取聊天记录
         chat_messages_str = await self._get_recent_chat_messages()
@@ -720,6 +798,7 @@ class CustomPicAction(BaseAction):
                     size=image_size if image_size else None,
                     base_url=http_base_url,
                     api_key=http_api_key,
+                    input_image_base64=input_image_base64,
                 )
         except Exception as e:
             logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
@@ -731,6 +810,73 @@ class CustomPicAction(BaseAction):
         else:
             logger.error(f"{self.log_prefix} 图片生成失败: {result}")
             return False, f"图片生成失败: {result}"
+
+    async def _extract_input_image(self) -> Optional[str]:
+        """
+        从当前消息中提取图片，用于图生图
+        
+        Returns:
+            Optional[str]: 图片的 base64 数据，如果没有图片则返回 None
+        """
+        try:
+            # 尝试从消息中获取图片
+            if hasattr(self, 'message') and self.message:
+                # 检查消息段中是否有图片
+                if hasattr(self.message, 'message_segment'):
+                    for seg in self.message.message_segment:
+                        if hasattr(seg, 'type') and seg.type == 'image':
+                            # 获取图片 URL 或 base64
+                            if hasattr(seg, 'data'):
+                                img_data = seg.data
+                                # 如果是 URL，下载并转换
+                                if isinstance(img_data, dict):
+                                    img_url = img_data.get('url') or img_data.get('file')
+                                    if img_url:
+                                        if img_url.startswith('http'):
+                                            success, result = await asyncio.to_thread(
+                                                download_image_to_base64, img_url
+                                            )
+                                            if success:
+                                                return result
+                                        elif img_url.startswith('base64://'):
+                                            return img_url[9:]  # 去掉 base64:// 前缀
+                                # 如果直接是 base64
+                                elif isinstance(img_data, str):
+                                    if img_data.startswith('base64://'):
+                                        return img_data[9:]
+                                    elif img_data.startswith(('iVBORw', '/9j/', 'UklGR', 'R0lGOD')):
+                                        return img_data
+                
+                # 尝试从 raw_message 中提取图片 URL
+                if hasattr(self.message, 'raw_message'):
+                    import re
+                    # 匹配 CQ 码中的图片
+                    cq_pattern = r'\[CQ:image[^\]]*url=([^\],]+)'
+                    matches = re.findall(cq_pattern, str(self.message.raw_message))
+                    if matches:
+                        img_url = matches[0]
+                        success, result = await asyncio.to_thread(
+                            download_image_to_base64, img_url
+                        )
+                        if success:
+                            return result
+                    
+                    # 匹配普通图片 URL
+                    url_pattern = r'https?://[^\s]+\.(?:png|jpg|jpeg|gif|webp)'
+                    url_matches = re.findall(url_pattern, str(self.message.raw_message), re.IGNORECASE)
+                    if url_matches:
+                        success, result = await asyncio.to_thread(
+                            download_image_to_base64, url_matches[0]
+                        )
+                        if success:
+                            return result
+            
+            logger.debug(f"{self.log_prefix} 消息中未找到图片")
+            return None
+            
+        except Exception as e:
+            logger.error(f"{self.log_prefix} 提取输入图片失败: {e}", exc_info=True)
+            return None
 
     async def _get_recent_chat_messages(self) -> str:
         """获取最近的聊天记录"""
@@ -1326,9 +1472,23 @@ class CustomPicAction(BaseAction):
         model: str, 
         size: Optional[str] = None,
         base_url: Optional[str] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        input_image_base64: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """发送HTTP请求生成图片（使用chat/completions端点）"""
+        """
+        发送HTTP请求生成图片（使用chat/completions端点）
+        
+        Args:
+            prompt: 图片生成提示词
+            model: 模型名称
+            size: 图片尺寸（可选）
+            base_url: API 基础 URL
+            api_key: API 密钥
+            input_image_base64: 输入图片的 base64 数据（用于图生图）
+            
+        Returns:
+            Tuple[bool, str]: (是否成功, 图片URL/base64或错误信息)
+        """
         import re
         
         # 使用传入的参数或从配置获取
@@ -1339,10 +1499,32 @@ class CustomPicAction(BaseAction):
 
         endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
+        # 构建消息内容
+        if input_image_base64:
+            # 图生图模式：使用多模态消息格式
+            mime_type = get_image_mime_type(input_image_base64)
+            message_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{input_image_base64}"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+            logger.info(f"{self.log_prefix} 发起图生图请求: {model}, Prompt: {prompt[:100]}...")
+        else:
+            # 文生图模式：纯文本消息
+            message_content = prompt
+            logger.info(f"{self.log_prefix} 发起文生图请求: {model}, Prompt: {prompt[:100]}...")
+
         # 使用chat completions格式
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": message_content}],
         }
 
         data = json.dumps(payload).encode("utf-8")
@@ -1352,8 +1534,6 @@ class CustomPicAction(BaseAction):
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
-
-        logger.info(f"{self.log_prefix} 发起图片请求: {model}, Prompt: {prompt[:100]}...")
 
         req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
 
@@ -1439,14 +1619,19 @@ class DirectPicCommand(BaseCommand):
         manual_style = self.matched_groups.get("style")
         
         if not raw_prompt:
-            await self.send_text("请提供图片描述，例如: /pic a cute cat 或 /pic anime 一个可爱的女孩")
+            await self.send_text("请提供图片描述，例如: /pic a cute cat 或 /pic anime 一个可爱的女孩\n图生图: 发送图片后使用 /pic <描述> 即可")
             return True, None, True
         
         # 如果正则没有匹配到风格，尝试从 prompt 中解析
         if not manual_style:
             manual_style, raw_prompt = self.parse_style_from_prompt(raw_prompt)
         
-        logger.info(f"{self.log_prefix} 收到直接生图指令，style: {manual_style}, prompt: {raw_prompt[:100]}...")
+        # 尝试提取输入图片（用于图生图）
+        input_image_base64 = await self._extract_input_image()
+        if input_image_base64:
+            logger.info(f"{self.log_prefix} 检测到输入图片，将进行图生图")
+        
+        logger.info(f"{self.log_prefix} 收到直接生图指令，style: {manual_style}, prompt: {raw_prompt[:100]}..., 图生图: {input_image_base64 is not None}")
         
         # 创建风格路由器
         style_router = StyleRouter(self.plugin_config)
@@ -1583,6 +1768,7 @@ class DirectPicCommand(BaseCommand):
                     size=image_size if image_size else None,
                     base_url=http_base_url,
                     api_key=http_api_key,
+                    input_image_base64=input_image_base64,
                 )
         except Exception as e:
             logger.error(f"{self.log_prefix} 图片生成请求失败: {e!r}", exc_info=True)
@@ -1595,6 +1781,73 @@ class DirectPicCommand(BaseCommand):
             logger.error(f"{self.log_prefix} 图片生成失败: {result}")
             await self.send_text(f"图片生成失败: {result}")
             return False, None, True
+
+    async def _extract_input_image(self) -> Optional[str]:
+        """
+        从当前消息中提取图片，用于图生图
+        
+        Returns:
+            Optional[str]: 图片的 base64 数据，如果没有图片则返回 None
+        """
+        try:
+            # 尝试从消息中获取图片
+            if hasattr(self, 'message') and self.message:
+                # 检查消息段中是否有图片
+                if hasattr(self.message, 'message_segment'):
+                    for seg in self.message.message_segment:
+                        if hasattr(seg, 'type') and seg.type == 'image':
+                            # 获取图片 URL 或 base64
+                            if hasattr(seg, 'data'):
+                                img_data = seg.data
+                                # 如果是 URL，下载并转换
+                                if isinstance(img_data, dict):
+                                    img_url = img_data.get('url') or img_data.get('file')
+                                    if img_url:
+                                        if img_url.startswith('http'):
+                                            success, result = await asyncio.to_thread(
+                                                download_image_to_base64, img_url
+                                            )
+                                            if success:
+                                                return result
+                                        elif img_url.startswith('base64://'):
+                                            return img_url[9:]  # 去掉 base64:// 前缀
+                                # 如果直接是 base64
+                                elif isinstance(img_data, str):
+                                    if img_data.startswith('base64://'):
+                                        return img_data[9:]
+                                    elif img_data.startswith(('iVBORw', '/9j/', 'UklGR', 'R0lGOD')):
+                                        return img_data
+                
+                # 尝试从 raw_message 中提取图片 URL
+                if hasattr(self.message, 'raw_message'):
+                    import re
+                    # 匹配 CQ 码中的图片
+                    cq_pattern = r'\[CQ:image[^\]]*url=([^\],]+)'
+                    matches = re.findall(cq_pattern, str(self.message.raw_message))
+                    if matches:
+                        img_url = matches[0]
+                        success, result = await asyncio.to_thread(
+                            download_image_to_base64, img_url
+                        )
+                        if success:
+                            return result
+                    
+                    # 匹配普通图片 URL
+                    url_pattern = r'https?://[^\s]+\.(?:png|jpg|jpeg|gif|webp)'
+                    url_matches = re.findall(url_pattern, str(self.message.raw_message), re.IGNORECASE)
+                    if url_matches:
+                        success, result = await asyncio.to_thread(
+                            download_image_to_base64, url_matches[0]
+                        )
+                        if success:
+                            return result
+            
+            logger.debug(f"{self.log_prefix} 消息中未找到图片")
+            return None
+            
+        except Exception as e:
+            logger.error(f"{self.log_prefix} 提取输入图片失败: {e}", exc_info=True)
+            return None
 
     async def _handle_image_result(self, result: str) -> Tuple[bool, Optional[str], bool]:
         """处理图片生成结果"""
@@ -1869,19 +2122,62 @@ class DirectPicCommand(BaseCommand):
             return False, str(e)
 
     def _make_http_image_request(
-        self, prompt: str, model: str, size: Optional[str] = None
+        self, 
+        prompt: str, 
+        model: str, 
+        size: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        input_image_base64: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """发送HTTP请求生成图片"""
+        """
+        发送HTTP请求生成图片（使用chat/completions端点）
+        
+        Args:
+            prompt: 图片生成提示词
+            model: 模型名称
+            size: 图片尺寸（可选）
+            base_url: API 基础 URL
+            api_key: API 密钥
+            input_image_base64: 输入图片的 base64 数据（用于图生图）
+            
+        Returns:
+            Tuple[bool, str]: (是否成功, 图片URL/base64或错误信息)
+        """
         import re
         
-        base_url = self.get_config("api.base_url", "")
-        api_key = self.get_config("api.api_key", "")
+        if base_url is None:
+            base_url = self.get_config("api.base_url", "")
+        if api_key is None:
+            api_key = self.get_config("api.api_key", "")
 
         endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
+        # 构建消息内容
+        if input_image_base64:
+            # 图生图模式：使用多模态消息格式
+            mime_type = get_image_mime_type(input_image_base64)
+            message_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{input_image_base64}"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+            logger.info(f"{self.log_prefix} 发起图生图请求: {model}, Prompt: {prompt[:100]}...")
+        else:
+            # 文生图模式：纯文本消息
+            message_content = prompt
+            logger.info(f"{self.log_prefix} 发起文生图请求: {model}, Prompt: {prompt[:100]}...")
+
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": message_content}],
         }
 
         data = json.dumps(payload).encode("utf-8")
@@ -1891,8 +2187,6 @@ class DirectPicCommand(BaseCommand):
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
-
-        logger.info(f"{self.log_prefix} 发起图片请求: {model}, Prompt: {prompt[:100]}...")
 
         req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
 
