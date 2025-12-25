@@ -82,6 +82,8 @@ def get_image_mime_type(base64_data: str) -> str:
 
 logger = get_logger("MaiBot_LLM2pic")
 
+_LLM_JUDGE = getattr(ActionActivationType, "LLM_JUDGE", ActionActivationType.ALWAYS)
+
 
 # ===== 默认提示词模板 =====
 
@@ -553,7 +555,7 @@ class CustomPicAction(BaseAction):
     """生成一张图片并发送"""
 
     # 激活设置
-    activation_type = ActionActivationType.LLM_JUDGE
+    activation_type = _LLM_JUDGE
     mode_enable = ChatMode.ALL
     parallel_action = False
 
