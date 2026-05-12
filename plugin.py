@@ -3076,22 +3076,15 @@ GPT 文生图：
         endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
         if input_image_base64:
-            # 图生图：多模态消息
             mime_type = get_image_mime_type(input_image_base64)
             message_content = [
                 {
                     "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{input_image_base64}"
-                    }
+                    "image_url": {"url": f"data:{mime_type};base64,{input_image_base64}"}
                 },
-                {
-                    "type": "text",
-                    "text": prompt
-                }
+                {"type": "text", "text": prompt}
             ]
         else:
-            # 纯文生图：纯文本消息
             message_content = prompt
 
         payload = {
@@ -3114,7 +3107,14 @@ GPT 文生图：
                 response_body = response.read().decode("utf-8")
 
                 if 200 <= response.status < 300:
-                    response_data = json.loads(response_body)
+                    if not response_body.strip():
+                        return False, "API 返回了空响应"
+
+                    try:
+                        response_data = json.loads(response_body)
+                    except json.JSONDecodeError as je:
+                        logger.error(f"[EditPicture] JSON 解析失败，响应内容: {response_body[:500]}")
+                        return False, f"API 返回了非 JSON 内容: {response_body[:100]}"
 
                     # 从 chat completions 响应中提取内容
                     content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
