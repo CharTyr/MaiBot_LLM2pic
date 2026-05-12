@@ -1,11 +1,11 @@
 # MaiBot_LLM2pic - 智能图片生成插件
 
-使用 LLM 根据聊天上下文自动生成提示词，调用图片生成 API。支持文生图和图生图。
+使用 LLM 根据聊天上下文自动生成提示词，调用图片生成 API。支持文生图和图片编辑。
 
 ## 依赖
 
 - Python 3.11+
-- Pillow（可选，用于图片裁切）：`pip install Pillow`
+- Pillow（可选，用于图片裁切和缩放）：`pip install Pillow`
 
 ## 快速开始
 
@@ -14,6 +14,39 @@ cp config.example.toml config.toml
 ```
 
 编辑 `config.toml`，根据你的 API 类型配置。
+
+## 双工具架构
+
+插件提供两个独立的工具，LLM 会根据场景自动选择：
+
+| 工具 | 用途 | 模型配置 |
+|------|------|----------|
+| `draw_picture` | 纯文生图（二次元/动漫风格） | `[anime]` |
+| `edit_picture` | 图片编辑 + GPT 文生图 | `[edit]` |
+
+### draw_picture
+
+从零生成图片，走 anime 模型（NovelAI / Gradio / SD API 等）。
+
+触发场景：
+- "画一张猫咪"
+- "来张自拍"
+- "我想看看你在干嘛"
+
+### edit_picture
+
+编辑用户提供的图片，或使用 GPT 图像模型生成图片。走 edit 模型（OpenAI chat/completions 格式）。
+
+触发场景：
+- [图片] "把这张图变成动漫风格"
+- [引用图片] "给这张图加上圣诞帽"
+- "用GPT画一张写实的风景"
+
+图片获取方式：
+1. 用户消息中直接包含图片
+2. 用户引用/回复了一条包含图片的消息
+
+如果没有找到图片，会退化为纯文生图模式。
 
 ## 支持的 API 类型
 
@@ -32,18 +65,18 @@ gradio_shift = 3
 gradio_timeout = 120
 ```
 
-### 2. OpenAI 格式（支持图生图）
+### 2. OpenAI 格式（用于 edit 模型）
 
 ```toml
-[anime]
+[edit]
 enabled = true
 api_type = "openai"
 base_url = "https://api.openai.com/v1"
 api_key = "sk-xxx"
-model_name = "dall-e-3"
+model_name = "gpt-image-2"
 ```
 
-OpenAI 格式使用 chat/completions 端点，支持多模态输入，可以进行图生图。
+OpenAI 格式使用 chat/completions 端点，支持多模态输入（图片+文字）。
 
 ### 3. SD API
 
@@ -63,46 +96,28 @@ sd_model_index = 0
 sd_seed = -1
 ```
 
-## 双模型配置
+### 4. NovelAI
 
-插件支持 `[anime]` 和 `[real]` 两个独立模型，LLM 会自动判断使用哪个：
+```toml
+[anime]
+enabled = true
+api_type = "novelai"
+api_key = "你的Bearer Token"
 
-- `anime`：二次元/动漫风格（自拍模式强制使用）
-- `real`：写实/真实风格
+novelai_model = "nai-diffusion-4-5-full"
+novelai_width = 832
+novelai_height = 1216
+novelai_steps = 28
+novelai_scale = 5.0
+```
 
-## 使用方式
-
-### 自动触发（文生图）
-
-聊天中提到画图相关内容会自动触发：
-- "画一张猫咪"
-- "来张自拍"
-
-### 自动触发（图生图）
-
-发送图片并要求修改时会自动触发：
-- [图片] "把这张图变成动漫风格"
-- [图片] "帮我修改一下这张图"
-
-### /pic 命令
+## /pic 命令
 
 ```
 /pic <prompt>           # 文生图，使用默认风格
-/pic anime <prompt>     # 文生图，强制二次元
-/pic real <prompt>      # 文生图，强制写实
-[图片] /pic <prompt>    # 图生图，基于发送的图片生成
+/pic anime <prompt>     # 文生图，强制 anime 模型
+/pic edit <prompt>      # 使用 edit 模型生成（支持图生图）
 ```
-
-## 图生图说明
-
-图生图功能仅支持 OpenAI 格式的 API（api_type = "openai"）。
-
-使用方式：
-1. 发送一张图片
-2. 在同一条消息中使用 `/pic <描述>` 命令
-3. 或者让 LLM 自动判断（发送图片并说"把这张图..."）
-
-图生图会将图片和文字描述一起发送给 API，API 会根据描述对图片进行修改或重绘。
 
 ## 常用配置
 
@@ -112,8 +127,6 @@ sd_seed = -1
 [generation]
 custom_prompt_add = "masterpiece, best quality"
 ```
-
-代码会自动在后面加逗号，不需要手动加。
 
 ### 图片裁切（去水印）
 
@@ -144,10 +157,10 @@ system_prompt = ""  # 留空使用默认，支持 {persona} 占位符
 - 增加 `gradio_steps`（如 20）
 - 在 `custom_prompt_add` 加质量词
 
-**Q: 图生图不工作？**
-- 确保使用的是 OpenAI 格式的 API（api_type = "openai"）
-- 确保 API 支持多模态输入（如 GPT-4V、Gemini 等）
-- Gradio 和 SD API 目前不支持图生图
+**Q: 图片编辑不工作？**
+- 确保 `[edit]` 配置了支持多模态输入的 OpenAI 格式 API
+- 确保最近5分钟内有图片消息（直接发送或引用）
+- 检查 Pillow 是否安装（用于图片缩放预处理）
 
 ## 许可证
 
