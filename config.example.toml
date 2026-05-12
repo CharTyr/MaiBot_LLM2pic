@@ -1,11 +1,11 @@
 # MaiBot_LLM2pic 插件配置
-# 版本: 3.1.0 - 双模型风格支持
+# 版本: 4.0.0 - 双模型风格支持（anime + edit）
 #
 # 本插件支持配置两个独立的图片生成模型：
-# - anime: 二次元/动漫风格
-# - real: 写实/真实风格
+# - anime: 二次元/动漫风格（文生图，自拍模式强制使用）
+# - edit: 图片编辑/改图（图生图，需要用户提供图片）
 #
-# LLM 会根据用户请求自动判断使用哪个模型，也可以通过 /pic anime 或 /pic real 手动指定
+# LLM 会根据用户请求自动判断使用哪个模型，也可以通过 /pic anime 或 /pic edit 手动指定
 
 # ============================================================
 # 插件基本配置
@@ -18,7 +18,7 @@ enabled = true
 # ============================================================
 [generation]
 # 默认风格：当 LLM 无法判断风格时使用
-# 可选值: "anime" 或 "real"
+# 可选值: "anime" 或 "edit"
 default_style = "anime"
 
 # 全局附加提示词（会添加到所有生成的提示词前面，可留空）
@@ -38,15 +38,22 @@ crop_pixels = 40
 # 是否启用此模型
 enabled = true
 
-# API 类型: "openai" 或 "gradio"
+# API 类型: "openai", "gradio", "sd_api" 或 "novelai"
+# - openai: 使用 OpenAI 兼容的 chat/completions 端点
+# - gradio: 使用 Gradio API（如 HuggingFace Space）
+# - sd_api: 使用 Stable Diffusion API
+# - novelai: 使用 NovelAI 官方 API（需要 NovelAI 订阅）
 api_type = "gradio"
 
 # API 端点 URL
 # Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
 # OpenAI 示例: "https://api.openai.com/v1"
+# NovelAI: 留空（使用官方端点）
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"
 
-# API 密钥（Gradio 类型可留空）
+# API 密钥
+# - Gradio: 可留空
+# - NovelAI: 填写你的 Bearer Token（从 novelai.net 获取）
 api_key = ""
 
 # 模型名称（仅 OpenAI 类型需要，如 "dall-e-3", "gpt-image-1"）
@@ -66,15 +73,43 @@ gradio_shift = 3
 # 轮询超时时间（秒）
 gradio_timeout = 120
 
+# --- NovelAI 官方 API 专用参数（仅当 api_type = "novelai" 时生效）---
+# 使用 NovelAI 官方 API 时，base_url 可留空，api_key 填写你的 NovelAI Bearer Token
+# 模型名称
+novelai_model = "nai-diffusion-4-5-full"
+
+# 图片尺寸（常用: 832x1216 竖图, 1216x832 横图, 1024x1024 方图）
+novelai_width = 832
+novelai_height = 1216
+
+# 推理步数（建议 23-28）
+novelai_steps = 28
+
+# CFG scale（建议 5-7）
+novelai_scale = 5.0
+
+# 采样器（可选: k_euler, k_euler_ancestral, k_dpmpp_2s_ancestral, k_dpmpp_sde 等）
+novelai_sampler = "k_euler"
+
+# 负面提示词
+novelai_negative_prompt = ""
+
+# 随机种子（-1 为随机）
+novelai_seed = -1
+
+# 请求超时时间（秒）
+novelai_timeout = 120
+
 # ============================================================
-# Real 模型配置（写实/真实风格）
+# Edit 模型配置（图片编辑/改图）
 # ============================================================
-# 用于生成真实人物、照片风格、写实场景、自然风景等
-[real]
+# 用于图片+文字输入进行改图、图片编辑、风格转换等
+# 仅支持 OpenAI chat/completions 格式（需要多模态能力）
+[edit]
 # 是否启用此模型
 enabled = false
 
-# API 类型: "openai" 或 "gradio"
+# API 类型: 图片编辑仅支持 "openai" 格式
 api_type = "openai"
 
 # API 端点 URL
@@ -83,14 +118,11 @@ base_url = ""
 # API 密钥
 api_key = ""
 
-# 模型名称（如 "dall-e-3", "gpt-image-1", "grok-2-image"）
-model_name = "gpt-image-1"
+# 模型名称（如 "gpt-image-2", "gpt-4o" 等支持图片输入的模型）
+model_name = "gpt-image-2"
 
-# --- Gradio 专用参数（仅当 api_type = "gradio" 时生效）---
-gradio_resolution = "1024x1024 ( 1:1 )"
-gradio_steps = 8
-gradio_shift = 3
-gradio_timeout = 120
+# 该风格专用的附加提示词（留空则不添加）
+custom_prompt_add = ""
 
 # ============================================================
 # LLM 配置（用于生成提示词）
@@ -107,7 +139,7 @@ context_time_minutes = 30
 
 # 自定义系统提示词（留空则使用默认提示词）
 # 支持 {persona} 占位符用于插入人设信息
-# LLM 会输出 JSON 格式：{"prompt": "...", "style": "anime|real"}
+# LLM 会输出 JSON 格式：{"prompt": "...", "style": "anime|edit"}
 system_prompt = ""
 
 # ============================================================
@@ -120,14 +152,14 @@ enable_image_generation = true
 # 是否启用 /pic 指令
 # 用法: /pic <prompt>
 #       /pic anime <prompt>  - 强制使用 anime 模型
-#       /pic real <prompt>   - 强制使用 real 模型
+#       /pic edit <prompt>   - 强制使用 edit 模型
 enable_direct_pic_command = true
 
 # ============================================================
 # 向后兼容配置（可选，不推荐使用）
 # ============================================================
-# 如果 [anime] 和 [real] 都未启用，将使用此配置
-# 建议迁移到上面的 [anime] 和 [real] 配置
+# 如果 [anime] 和 [edit] 都未启用，将使用此配置
+# 建议迁移到上面的 [anime] 和 [edit] 配置
 [api]
 api_type = "gradio"
 base_url = "https://tongyi-mai-z-image-turbo.hf.space"

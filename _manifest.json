@@ -1,44 +1,43 @@
 {
-  "manifest_version": 1,
-  "name": "MaiBot_LLM2pic",
+  "manifest_version": 2,
   "version": "1.0.0",
-  "description": "使用LLM根据聊天记录和人设生成提示词的图片生成插件，适配自然语言生图模型",
+  "name": "MaiBot LLM2Pic",
+  "description": "使用 LLM 根据聊天上下文生成提示词并调用图像模型进行绘图，兼容旧版插件系统。",
   "author": {
     "name": "CharTyr",
     "url": "https://github.com/CharTyr/MaiBot_LLM2pic"
   },
   "license": "MIT",
-  
-  "host_application": {
-    "min_version": "0.11.0",
-    "max_version": "0.12.99"
+  "urls": {
+    "repository": "https://github.com/CharTyr/MaiBot_LLM2pic",
+    "homepage": "https://github.com/CharTyr/MaiBot_LLM2pic",
+    "documentation": "https://github.com/CharTyr/MaiBot_LLM2pic#readme",
+    "issues": "https://github.com/CharTyr/MaiBot_LLM2pic/issues"
   },
-  "homepage_url": "https://github.com/CharTyr/MaiBot_LLM2pic",
-  "repository_url": "https://github.com/CharTyr/MaiBot_LLM2pic",
-  "keywords": ["draw", "image", "ai", "llm", "gpt-image", "grok"],
-  "categories": ["Expression", "Picture"],
-  
-  "default_locale": "zh-CN",
-  "locales_path": "_locales",
-  
-  "plugin_info": {
-    "is_built_in": false,
-    "plugin_type": "image_generator",
-    "components": [
-      {
-        "type": "action",
-        "name": "custom_pic_action",
-        "description": "使用LLM生成提示词并生成图片",
-        "activation_modes": ["llm_judge"],
-        "keywords": []
-      }
-    ],
-    "features": [
-      "LLM智能生成提示词",
-      "支持自然语言生图模型",
-      "可自定义系统提示词",
-      "图片裁切去水印",
-      "兼容OpenAI API格式"
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.0.0"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "llm.generate",
+    "component.get_all_plugins",
+    "message.get_by_time_in_chat",
+    "message.get_by_id",
+    "send.text",
+    "send.image",
+    "send.forward",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
     ]
-  }
+  },
+  "id": "chartyr.maibot-llm2pic"
 }

@@ -1,6 +1,6 @@
 # MaiBot_LLM2pic - 智能图片生成插件
 
-使用 LLM 根据聊天上下文自动生成提示词，调用图片生成 API。
+使用 LLM 根据聊天上下文自动生成提示词，调用图片生成 API。支持文生图和图生图。
 
 ## 依赖
 
@@ -32,7 +32,7 @@ gradio_shift = 3
 gradio_timeout = 120
 ```
 
-### 2. OpenAI 格式
+### 2. OpenAI 格式（支持图生图）
 
 ```toml
 [anime]
@@ -42,6 +42,8 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-xxx"
 model_name = "dall-e-3"
 ```
+
+OpenAI 格式使用 chat/completions 端点，支持多模态输入，可以进行图生图。
 
 ### 3. SD API
 
@@ -70,19 +72,37 @@ sd_seed = -1
 
 ## 使用方式
 
-### 自动触发
+### 自动触发（文生图）
 
 聊天中提到画图相关内容会自动触发：
 - "画一张猫咪"
 - "来张自拍"
 
+### 自动触发（图生图）
+
+发送图片并要求修改时会自动触发：
+- [图片] "把这张图变成动漫风格"
+- [图片] "帮我修改一下这张图"
+
 ### /pic 命令
 
 ```
-/pic <prompt>           # 使用默认风格
-/pic anime <prompt>     # 强制二次元
-/pic real <prompt>      # 强制写实
+/pic <prompt>           # 文生图，使用默认风格
+/pic anime <prompt>     # 文生图，强制二次元
+/pic real <prompt>      # 文生图，强制写实
+[图片] /pic <prompt>    # 图生图，基于发送的图片生成
 ```
+
+## 图生图说明
+
+图生图功能仅支持 OpenAI 格式的 API（api_type = "openai"）。
+
+使用方式：
+1. 发送一张图片
+2. 在同一条消息中使用 `/pic <描述>` 命令
+3. 或者让 LLM 自动判断（发送图片并说"把这张图..."）
+
+图生图会将图片和文字描述一起发送给 API，API 会根据描述对图片进行修改或重绘。
 
 ## 常用配置
 
@@ -123,6 +143,11 @@ system_prompt = ""  # 留空使用默认，支持 {persona} 占位符
 **Q: 想提高质量？**
 - 增加 `gradio_steps`（如 20）
 - 在 `custom_prompt_add` 加质量词
+
+**Q: 图生图不工作？**
+- 确保使用的是 OpenAI 格式的 API（api_type = "openai"）
+- 确保 API 支持多模态输入（如 GPT-4V、Gemini 等）
+- Gradio 和 SD API 目前不支持图生图
 
 ## 许可证
 
