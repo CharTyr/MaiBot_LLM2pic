@@ -2609,6 +2609,11 @@ class _CommandRuntimeProxy(DirectPicCommand):
 class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
     """LLM2pic 的 rdev 原生插件入口。"""
 
+    # 防重复调用冷却记录: {stream_id: last_trigger_timestamp}
+    _draw_cooldowns: dict = {}
+    _edit_cooldowns: dict = {}
+    _DRAW_COOLDOWN_SECONDS = 60  # draw_picture 同一聊天流冷却60秒
+
     async def on_load(self) -> None:
         self.ctx.logger.info("MaiBot_LLM2pic 原生适配插件已加载")
 
@@ -2640,6 +2645,15 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         plugin_config = self.get_plugin_config_data()
         if not _normalize_bool(self._config_get("components.enable_image_generation", True)):
             return False, "图片生成功能未启用"
+
+        # 防重复调用：同一聊天流冷却期内拒绝
+        now = time.time()
+        if stream_id:
+            last_trigger = self._draw_cooldowns.get(stream_id, 0)
+            if now - last_trigger < self._DRAW_COOLDOWN_SECONDS:
+                logger.debug(f"[DrawPicture] 冷却中，跳过重复调用: stream={stream_id}")
+                return False, ""
+            self._draw_cooldowns[stream_id] = now
 
         # 先生成 prompt（快速，在 RPC 超时内完成）
         proxy = _ActionRuntimeProxy(
