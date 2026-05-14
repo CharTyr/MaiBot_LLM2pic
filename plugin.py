@@ -2612,7 +2612,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
     # 防重复调用冷却记录: {stream_id: last_trigger_timestamp}
     _draw_cooldowns: dict = {}
     _edit_cooldowns: dict = {}
-    _DRAW_COOLDOWN_SECONDS = 60  # draw_picture 同一聊天流冷却60秒
+    _DRAW_COOLDOWN_SECONDS = 30  # draw_picture 同一聊天流冷却30秒
 
     async def on_load(self) -> None:
         self.ctx.logger.info("MaiBot_LLM2pic 原生适配插件已加载")
