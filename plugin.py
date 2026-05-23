@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, Literal, Optional
 import asyncio
+import json
 import time
 
 from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
@@ -301,6 +302,141 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         base_normalized, changed = super().normalize_plugin_config(normalized_config)
         return base_normalized, changed or base_normalized != raw_config
 
+    def get_webui_config_schema(
+        self,
+        *,
+        plugin_id: str = "",
+        plugin_name: str = "",
+        plugin_version: str = "",
+        plugin_description: str = "",
+        plugin_author: str = "",
+    ) -> dict[str, Any]:
+        schema = super().get_webui_config_schema(
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_description=plugin_description,
+            plugin_author=plugin_author,
+        )
+        self._flatten_endpoint_sections_for_webui(schema)
+        return schema
+
+    @classmethod
+    def _flatten_endpoint_sections_for_webui(cls, schema: dict[str, Any]) -> None:
+        sections = schema.get("sections")
+        if not isinstance(sections, dict):
+            return
+        for style in ("anime", "edit"):
+            section = sections.get(style)
+            if not isinstance(section, dict):
+                continue
+            fields = section.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            for endpoint in ("regex_url", "newapi_nai", "openai", "gradio", "sd_api", "novelai"):
+                endpoint_field = fields.pop(endpoint, None)
+                if not isinstance(endpoint_field, dict):
+                    continue
+                endpoint_defaults = endpoint_field.get("default")
+                if not isinstance(endpoint_defaults, dict):
+                    continue
+                endpoint_field_order = int(endpoint_field.get("order") or 0)
+                cls._add_flat_endpoint_fields(
+                    fields,
+                    endpoint=endpoint,
+                    endpoint_defaults=endpoint_defaults,
+                    base_order=endpoint_field_order * 100,
+                )
+
+    @classmethod
+    def _add_flat_endpoint_fields(
+        cls,
+        fields: dict[str, Any],
+        *,
+        endpoint: str,
+        endpoint_defaults: dict[str, Any],
+        base_order: int,
+    ) -> None:
+        for index, (field_name, default_value) in enumerate(endpoint_defaults.items()):
+            flat_name = f"{endpoint}_{field_name}"
+            fields[flat_name] = cls._build_flat_endpoint_field(
+                name=flat_name,
+                endpoint=endpoint,
+                field_name=field_name,
+                default_value=default_value,
+                order=base_order + index,
+            )
+
+    @staticmethod
+    def _build_flat_endpoint_field(
+        *,
+        name: str,
+        endpoint: str,
+        field_name: str,
+        default_value: Any,
+        order: int,
+    ) -> dict[str, Any]:
+        if isinstance(default_value, bool):
+            field_type = "boolean"
+            ui_type = "switch"
+        elif isinstance(default_value, int) and not isinstance(default_value, bool):
+            field_type = "integer"
+            ui_type = "number"
+        elif isinstance(default_value, float):
+            field_type = "number"
+            ui_type = "number"
+        elif isinstance(default_value, dict):
+            field_type = "string"
+            ui_type = "textarea"
+            default_value = json.dumps(default_value, ensure_ascii=False, indent=2)
+        else:
+            field_type = "string"
+            ui_type = "text"
+
+        choices = None
+        if field_name == "api_key":
+            ui_type = "password"
+        elif field_name == "image_format":
+            field_type = "select"
+            ui_type = "select"
+            choices = ["png", "webp"]
+        elif field_name == "proxy_mode":
+            field_type = "select"
+            ui_type = "select"
+            choices = ["auto", "inherit", "direct"]
+
+        return {
+            "name": name,
+            "type": field_type,
+            "default": default_value,
+            "description": f"{endpoint}.{field_name}",
+            "required": False,
+            "choices": choices,
+            "min": None,
+            "max": None,
+            "step": None,
+            "pattern": None,
+            "max_length": None,
+            "label": name,
+            "placeholder": None,
+            "hint": f"写入 [{endpoint}].{field_name}",
+            "icon": None,
+            "hidden": False,
+            "disabled": False,
+            "order": order,
+            "input_type": None,
+            "ui_type": ui_type,
+            "rows": 4 if ui_type == "textarea" else 3,
+            "group": endpoint,
+            "depends_on": "api_type",
+            "depends_value": endpoint,
+            "item_type": None,
+            "item_fields": None,
+            "min_items": None,
+            "max_items": None,
+            "example": None,
+        }
+
     @staticmethod
     def _normalize_legacy_endpoint_config(config_data: dict[str, Any]) -> dict[str, Any]:
         """兼容旧平铺配置，并把端点字段归入当前 api_type 分组。"""
@@ -360,7 +496,14 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             }
             for old_key, new_key in prefix_map.get(api_type, {}).items():
                 if old_key in style_config and new_key not in endpoint_config:
-                    endpoint_config[new_key] = style_config[old_key]
+                    value = style_config[old_key]
+                    if new_key == "extra_params" and isinstance(value, str):
+                        try:
+                            parsed_value = json.loads(value) if value.strip() else {}
+                        except json.JSONDecodeError:
+                            parsed_value = {}
+                        value = parsed_value if isinstance(parsed_value, dict) else {}
+                    endpoint_config[new_key] = value
 
             for key in list(style_config.keys()):
                 if key in {"enabled", "api_type", "regex_url", "newapi_nai", "openai", "gradio", "sd_api", "novelai"}:
