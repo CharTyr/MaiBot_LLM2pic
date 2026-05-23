@@ -341,11 +341,21 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 if not isinstance(endpoint_defaults, dict):
                     continue
                 endpoint_field_order = int(endpoint_field.get("order") or 0)
+                endpoint_section_key = f"{style}_{endpoint}"
+                sections[endpoint_section_key] = {
+                    "name": f"{style}.{endpoint}",
+                    "title": f"{style}.{endpoint}",
+                    "description": endpoint_field.get("description") or f"{style}.{endpoint} 端点参数",
+                    "icon": section.get("icon"),
+                    "collapsed": endpoint != "newapi_nai",
+                    "order": int(section.get("order") or 0) * 100 + endpoint_field_order + 1,
+                    "fields": {},
+                }
                 cls._add_flat_endpoint_fields(
-                    fields,
+                    sections[endpoint_section_key]["fields"],
                     endpoint=endpoint,
                     endpoint_defaults=endpoint_defaults,
-                    base_order=endpoint_field_order * 100,
+                    base_order=0,
                 )
 
     @classmethod
@@ -358,9 +368,8 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         base_order: int,
     ) -> None:
         for index, (field_name, default_value) in enumerate(endpoint_defaults.items()):
-            flat_name = f"{endpoint}_{field_name}"
-            fields[flat_name] = cls._build_flat_endpoint_field(
-                name=flat_name,
+            fields[field_name] = cls._build_flat_endpoint_field(
+                name=field_name,
                 endpoint=endpoint,
                 field_name=field_name,
                 default_value=default_value,
@@ -419,7 +428,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             "max_length": None,
             "label": name,
             "placeholder": None,
-            "hint": f"写入 [{endpoint}].{field_name}",
+            "hint": f"写入当前端点分组的 {field_name}",
             "icon": None,
             "hidden": False,
             "disabled": False,
@@ -428,8 +437,8 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             "ui_type": ui_type,
             "rows": 4 if ui_type == "textarea" else 3,
             "group": endpoint,
-            "depends_on": "api_type",
-            "depends_value": endpoint,
+            "depends_on": None,
+            "depends_value": None,
             "item_type": None,
             "item_fields": None,
             "min_items": None,
