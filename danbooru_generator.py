@@ -192,4 +192,12 @@ async def generate_danbooru_prompt(
     if sfw_mode:
         generated_prompt = sanitize_sfw_prompt(generated_prompt)
 
+    logger.info(
+        "[DanbooruPrompt] generated sfw=%s nsfw_allowed=%s selfie=%s tags=%s",
+        sfw_mode,
+        nsfw_allowed,
+        selfie_mode,
+        generated_prompt[:500],
+    )
+
     return True, generated_prompt, "anime"
