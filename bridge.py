@@ -298,6 +298,7 @@ class _RuntimeBridgeMixin:
 {user_request}
 {mode_hint}
 
+如果用户没有明确指定场景，请主动补充一个具体、自然、符合聊天语境的背景/地点/时间/光线；如果用户已经指定场景，请不要替换。
 请根据以上信息，生成适合的图片提示词和风格判断。必须以 JSON 格式输出。"""
 
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
