@@ -5,7 +5,6 @@
 import base64
 import urllib.request
 import urllib.parse
-import re
 from typing import Any, Tuple
 
 from src.common.logger import get_logger

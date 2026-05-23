@@ -193,7 +193,34 @@ class LlmConfig(PluginConfigBase):
     model_name: str = Field(default="", description="用于生成提示词的 LLM 模型名，留空使用系统默认")
     context_message_limit: int = Field(default=20, ge=1, le=100, description="聊天记录条数上限")
     context_time_minutes: int = Field(default=30, ge=1, le=1440, description="聊天记录时间范围（分钟）")
+    prompt_mode: Literal["legacy", "danbooru"] = Field(default="danbooru", description="提示词生成模式")
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0, description="Danbooru 提示词生成温度")
+    danbooru_sfw_mode: bool = Field(default=False, description="Danbooru 模式是否启用 SFW 安全模板")
+    enforce_tag_order: bool = Field(default=True, description="Danbooru 模式是否启用轻量 tag 排序")
+    selfie_appearance_policy: Literal["auto", "never", "keep"] = Field(default="auto", description="自拍外貌 tag 过滤策略")
     system_prompt: str = Field(default="", description="自定义系统提示词", json_schema_extra={"ui_type": "textarea", "rows": 8})
+
+
+class TagRetrieverConfig(PluginConfigBase):
+    """Danbooru tag 检索增强配置。"""
+
+    __ui_label__ = "Tag 检索"
+    __ui_icon__ = "tags"
+    __ui_order__ = 6
+
+    enabled: bool = Field(default=True, description="是否启用 Danbooru 候选 tag 检索增强")
+    mode: Literal["online", "local"] = Field(default="online", description="检索模式")
+    api_url: str = Field(default="https://sakizuki-danboorusearch.hf.space/api", description="在线检索 API 地址")
+    timeout: float = Field(default=90.0, ge=1.0, le=300.0, description="在线检索超时时间")
+    search_limit: int = Field(default=30, ge=1, le=500, description="在线语义检索返回上限")
+    search_top_k: int = Field(default=5, ge=1, le=50, description="在线每个分词段召回数")
+    related_limit: int = Field(default=20, ge=0, le=200, description="在线共现推荐上限")
+    related_seed_count: int = Field(default=8, ge=1, le=50, description="在线共现推荐种子 tag 数")
+    show_nsfw: bool = Field(default=False, description="检索结果是否包含 NSFW tag")
+    popularity_weight: float = Field(default=0.15, ge=0.0, le=1.0, description="在线检索热度排序权重")
+    fallback_local: bool = Field(default=True, description="在线检索无结果或失败时是否回退本地检索")
+    top_k: int = Field(default=20, ge=1, le=200, description="本地检索返回上限")
+    min_score: float = Field(default=0.3, ge=0.0, le=1.0, description="本地检索最低相似度")
 
 
 class ComponentsConfig(PluginConfigBase):
@@ -216,6 +243,7 @@ class LLM2PicPluginConfig(PluginConfigBase):
     anime: AnimeConfig = Field(default_factory=AnimeConfig)
     edit: EditConfig = Field(default_factory=EditConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
+    tag_retriever: TagRetrieverConfig = Field(default_factory=TagRetrieverConfig)
     components: ComponentsConfig = Field(default_factory=ComponentsConfig)
 
 
@@ -543,6 +571,14 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         self.ctx.logger.info("MaiBot_LLM2pic 原生适配插件已加载")
 
     async def on_unload(self) -> None:
+        try:
+            from .core.services.danbooru_online_retriever import reset_online_retriever
+            from .core.services.tag_retriever import reset_tag_retriever
+
+            reset_online_retriever()
+            reset_tag_retriever()
+        except Exception:
+            pass
         self.ctx.logger.info("MaiBot_LLM2pic 原生适配插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:

@@ -7,6 +7,7 @@
 from typing import Any, Mapping, Optional, Tuple
 import time
 
+from .danbooru_generator import generate_danbooru_prompt
 from .utils import download_image_to_base64, _peel_envelope
 from .style_router import LLMOutputParser, DEFAULT_SYSTEM_PROMPT
 from .actions import DrawPictureToolMetadata
@@ -284,6 +285,19 @@ class _RuntimeBridgeMixin:
         selfie_mode: bool,
         custom_system_prompt: str = "",
     ) -> Tuple[bool, str, Optional[str]]:
+        if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
+            target_model = await self._ctx_get_llm_model_name()
+            return await generate_danbooru_prompt(
+                config=self.get_plugin_config_data(),
+                llm=self.ctx.llm,
+                model=target_model,
+                user_request=user_request,
+                chat_messages=chat_messages,
+                persona=persona,
+                selfie_mode=selfie_mode,
+                custom_system_prompt=custom_system_prompt,
+            )
+
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
         system_prompt = base_prompt.replace("{persona}", persona)
 

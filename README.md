@@ -2,6 +2,8 @@
 
 使用 LLM 根据聊天上下文自动生成提示词，调用图片生成 API。支持文生图和图片编辑。
 
+本插件 vendored 了 `saberlights/nai_draw_plugin` 的 Danbooru tag 生成相关模块（GPL-v3.0-or-later）。
+
 ## 依赖
 
 - Python 3.11+

@@ -184,10 +184,43 @@ context_message_limit = 20
 # 获取聊天记录的时间范围（分钟，1-1440）
 context_time_minutes = 30
 
+# 提示词生成模式：danbooru / legacy
+prompt_mode = "danbooru"
+
+# Danbooru 模式提示词生成温度
+temperature = 0.2
+
+# Danbooru 模式是否启用 SFW 安全模板
+danbooru_sfw_mode = false
+
+# Danbooru 模式是否启用轻量 tag 排序
+enforce_tag_order = true
+
+# 自拍外貌 tag 过滤策略：auto / never / keep
+selfie_appearance_policy = "auto"
+
 # 自定义系统提示词（留空则使用默认提示词）
 # 支持 {persona} 占位符用于插入人设信息
 # LLM 会输出 JSON 格式：{"prompt": "...", "style": "anime|edit"}
 system_prompt = ""
+
+# ============================================================
+# Danbooru Tag 检索增强
+# ============================================================
+[tag_retriever]
+enabled = true
+mode = "online"  # online / local
+api_url = "https://sakizuki-danboorusearch.hf.space/api"
+timeout = 90.0
+search_limit = 30
+search_top_k = 5
+related_limit = 20
+related_seed_count = 8
+show_nsfw = false
+popularity_weight = 0.15
+fallback_local = true
+top_k = 20
+min_score = 0.3
 
 # ============================================================
 # 组件启用配置
