@@ -981,6 +981,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
 
         raw_prompt = (matched_groups or {}).get("prompt", "").strip()
         manual_style = (matched_groups or {}).get("style")
+        nsfw_allowed = str((matched_groups or {}).get("nsfw", "") or "").strip().lower() == "nsfw"
 
         if not raw_prompt:
             return True, "用法: /pic <prompt> | /pic anime <prompt> | /pic edit <prompt>", True
@@ -996,6 +997,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     stream_id=stream_id,
                     raw_prompt=raw_prompt,
                     manual_style=manual_style,
+                    nsfw_allowed=nsfw_allowed,
                     session_message=kwargs.get("message"),
                 )
             )
@@ -1012,6 +1014,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         stream_id: str,
         raw_prompt: str,
         manual_style: Optional[str],
+        nsfw_allowed: bool = False,
         session_message: Any = None,
     ) -> None:
         """后台异步处理 /pic 命令。"""
@@ -1033,7 +1036,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     chat_messages="",
                     persona=await proxy._get_persona(),
                     selfie_mode=False,
-                    nsfw_allowed=False,
+                    nsfw_allowed=nsfw_allowed,
                     custom_system_prompt=str(proxy.get_config("llm.system_prompt", "") or ""),
                 )
                 if not success:
