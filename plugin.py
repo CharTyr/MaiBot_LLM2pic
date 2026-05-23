@@ -195,7 +195,7 @@ class LlmConfig(PluginConfigBase):
     context_time_minutes: int = Field(default=30, ge=1, le=1440, description="聊天记录时间范围（分钟）")
     prompt_mode: Literal["legacy", "danbooru"] = Field(default="danbooru", description="提示词生成模式")
     temperature: float = Field(default=0.2, ge=0.0, le=2.0, description="Danbooru 提示词生成温度")
-    danbooru_sfw_mode: bool = Field(default=False, description="Danbooru 模式是否启用 SFW 安全模板")
+    danbooru_sfw_mode: bool = Field(default=True, description="Danbooru 模式默认是否启用 SFW 安全模板")
     enforce_tag_order: bool = Field(default=True, description="Danbooru 模式是否启用轻量 tag 排序")
     selfie_appearance_policy: Literal["auto", "never", "keep"] = Field(default="auto", description="自拍外貌 tag 过滤策略")
     system_prompt: str = Field(default="", description="自定义系统提示词", json_schema_extra={"ui_type": "textarea", "rows": 8})
@@ -259,6 +259,13 @@ _DRAW_PICTURE_TOOL_PARAMETERS = [
         name="selfie_mode",
         param_type=ToolParamType.BOOLEAN,
         description="是否生成自拍模式图片；当用户要求自拍、想看你当前状态或环境时设为 true。",
+        required=False,
+        default=False,
+    ),
+    ToolParameterInfo(
+        name="nsfw_allowed",
+        param_type=ToolParamType.BOOLEAN,
+        description="是否允许本次生图按 NSFW Danbooru 规则生成；仅当用户明确请求成人向/NSFW 内容时设为 true，默认 false。",
         required=False,
         default=False,
     ),
@@ -656,6 +663,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         self,
         description: str = "",
         selfie_mode: bool = False,
+        nsfw_allowed: bool = False,
         stream_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -676,6 +684,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 tool_args={
                     "description": description,
                     "selfie_mode": selfie_mode,
+                    "nsfw_allowed": nsfw_allowed,
                 },
                 session_message=kwargs.get("message"),
             )
@@ -683,6 +692,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             # 获取聊天记录、生成提示词（都在30秒内）
             original_description = str(proxy.tool_args.get("description", "") or "").strip()
             selfie_mode_bool = _normalize_bool(proxy.tool_args.get("selfie_mode", False))
+            nsfw_allowed_bool = _normalize_bool(proxy.tool_args.get("nsfw_allowed", False))
 
             chat_messages_str = await proxy._get_recent_chat_messages()
             allowed, guard_category, guard_error = self._assess_draw_guard(
@@ -704,6 +714,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 chat_messages=chat_messages_str,
                 persona=persona,
                 selfie_mode=selfie_mode_bool,
+                nsfw_allowed=nsfw_allowed_bool,
                 custom_system_prompt=custom_system_prompt,
             )
             if not success:

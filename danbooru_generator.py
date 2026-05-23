@@ -145,11 +145,12 @@ async def generate_danbooru_prompt(
     chat_messages: str,
     persona: str,
     selfie_mode: bool,
+    nsfw_allowed: bool,
     custom_system_prompt: str = "",
 ) -> tuple[bool, str, Optional[str]]:
     """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
-    sfw_mode = bool(llm_config.get("danbooru_sfw_mode", False))
+    sfw_mode = bool(llm_config.get("danbooru_sfw_mode", True)) and not nsfw_allowed
     template = SFW_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else PROMPT_GENERATOR_JSON_TEMPLATE
     tag_candidates = await _retrieve_tag_candidates(config, user_request)
     full_prompt = _render_generator_prompt(

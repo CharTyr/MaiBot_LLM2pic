@@ -190,8 +190,8 @@ prompt_mode = "danbooru"
 # Danbooru 模式提示词生成温度
 temperature = 0.2
 
-# Danbooru 模式是否启用 SFW 安全模板
-danbooru_sfw_mode = false
+# Danbooru 模式默认是否启用 SFW 安全模板；draw_picture(nsfw_allowed=true) 可单次放开
+danbooru_sfw_mode = true
 
 # Danbooru 模式是否启用轻量 tag 排序
 enforce_tag_order = true

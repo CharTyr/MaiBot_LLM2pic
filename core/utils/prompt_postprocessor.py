@@ -378,6 +378,7 @@ def normalize_prompt_order(prompt: str) -> str:
         if not tags:
             continue
 
+        nsfw_tags: List[str] = []
         counts: List[str] = []
         cameras: List[str] = []
         years: List[str] = []
@@ -387,7 +388,9 @@ def normalize_prompt_order(prompt: str) -> str:
             core = _strip_wrappers(t)
             core_norm = re.sub(r"\s+", " ", core).strip().lower()
 
-            if _YEAR_RE.match(core_norm):
+            if core_norm == "nsfw":
+                nsfw_tags.append(t)
+            elif _YEAR_RE.match(core_norm):
                 years.append(t)
             elif _COUNT_RE.match(core_norm):
                 counts.append(t)
@@ -398,7 +401,7 @@ def normalize_prompt_order(prompt: str) -> str:
 
         # 视角类标签通常比 1girl/1boy 更“前置有效”，所以输出时把 camera 放在 count 之前
         # 但保留原始相对顺序（分别在各自组内稳定）
-        new_tags = cameras + counts + rest + years
+        new_tags = nsfw_tags + cameras + counts + rest + years
         joined = _preserve_trailing_comma(", ".join(new_tags).strip(), raw_line)
         if prefix:
             out_lines.append(f"{prefix} {joined}".strip())

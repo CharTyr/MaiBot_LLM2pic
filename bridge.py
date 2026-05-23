@@ -283,6 +283,7 @@ class _RuntimeBridgeMixin:
         chat_messages: str,
         persona: str,
         selfie_mode: bool,
+        nsfw_allowed: bool = False,
         custom_system_prompt: str = "",
     ) -> Tuple[bool, str, Optional[str]]:
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
@@ -295,6 +296,7 @@ class _RuntimeBridgeMixin:
                 chat_messages=chat_messages,
                 persona=persona,
                 selfie_mode=selfie_mode,
+                nsfw_allowed=nsfw_allowed,
                 custom_system_prompt=custom_system_prompt,
             )
 
@@ -398,6 +400,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         chat_messages: str,
         persona: str,
         selfie_mode: bool,
+        nsfw_allowed: bool,
         custom_system_prompt: str,
     ) -> Tuple[bool, str, Optional[str]]:
         return await self._runtime._ctx_generate_prompt_with_style(
@@ -405,6 +408,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
             chat_messages=chat_messages,
             persona=persona,
             selfie_mode=selfie_mode,
+            nsfw_allowed=nsfw_allowed,
             custom_system_prompt=custom_system_prompt,
         )
 
