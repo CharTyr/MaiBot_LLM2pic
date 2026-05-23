@@ -144,6 +144,12 @@ class StyleRouter:
             "newapi_nai_image_format": _endpoint_value(style_config, endpoint_config, "image_format", style_config.get("newapi_nai_image_format", "png")),
             "newapi_nai_max_tokens": _endpoint_value(style_config, endpoint_config, "max_tokens", style_config.get("newapi_nai_max_tokens", 100000)),
             "newapi_nai_timeout": _endpoint_value(style_config, endpoint_config, "timeout", style_config.get("newapi_nai_timeout", 180)),
+            "newapi_nai_retry_attempts": _endpoint_value(style_config, endpoint_config, "retry_attempts", style_config.get("newapi_nai_retry_attempts", 3)),
+            "newapi_nai_proxy_mode": _endpoint_value(style_config, endpoint_config, "proxy_mode", style_config.get("newapi_nai_proxy_mode", "auto")),
+            "newapi_nai_quality_toggle": _endpoint_value(style_config, endpoint_config, "quality_toggle", style_config.get("newapi_nai_quality_toggle", True)),
+            "newapi_nai_auto_smea": _endpoint_value(style_config, endpoint_config, "auto_smea", style_config.get("newapi_nai_auto_smea", False)),
+            "newapi_nai_variety_boost": _endpoint_value(style_config, endpoint_config, "variety_boost", style_config.get("newapi_nai_variety_boost", False)),
+            "newapi_nai_extra_params": _endpoint_value(style_config, endpoint_config, "extra_params", style_config.get("newapi_nai_extra_params", {})),
         }
 
     def route(

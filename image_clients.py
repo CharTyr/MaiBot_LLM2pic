@@ -28,6 +28,9 @@ from .utils import (
 
 logger = get_logger("MaiBot_LLM2pic")
 
+_NEWAPI_NAI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_NEWAPI_NAI_SEEDS_PATTERN = re.compile(r"<!--\s*seeds:\s*(\[[^\]]*])\s*-->")
+
 
 class ImageClientMixin:
     """复用图片输入提取、结果处理和各类生图 API 请求。"""
@@ -526,6 +529,122 @@ class ImageClientMixin:
             return "".join(data_uri_match.group(1).split())
         return None
 
+    @staticmethod
+    def _extract_newapi_nai_message_content(choice: object) -> str:
+        if not isinstance(choice, dict):
+            return ""
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "".join(parts)
+        return ""
+
+    @staticmethod
+    def _extract_newapi_nai_seeds(content: str) -> list[object]:
+        match = _NEWAPI_NAI_SEEDS_PATTERN.search(content or "")
+        if not match:
+            return []
+        try:
+            seeds = json.loads(match.group(1))
+        except (TypeError, ValueError):
+            return []
+        return seeds if isinstance(seeds, list) else []
+
+    @staticmethod
+    def _extract_newapi_nai_error(response_data: object) -> str:
+        if not isinstance(response_data, dict):
+            return ""
+        error = response_data.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or "").strip()
+            return f"{message} (code={code})" if message and code else message or code
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        for key in ("message", "detail"):
+            value = response_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @staticmethod
+    def _is_newapi_nai_retryable_error(exc: urllib.error.URLError) -> bool:
+        if isinstance(exc, urllib.error.HTTPError):
+            return exc.code in _NEWAPI_NAI_RETRYABLE_STATUS_CODES
+        reason = str(getattr(exc, "reason", exc)).lower()
+        return any(token in reason for token in ("timed out", "timeout", "connection reset", "temporarily unavailable"))
+
+    @staticmethod
+    def _normalize_newapi_nai_token(api_key: str) -> str:
+        token = str(api_key or "").strip()
+        if token.lower().startswith("bearer "):
+            return token.split(" ", 1)[1].strip()
+        return token
+
+    @staticmethod
+    def _normalize_newapi_nai_proxy_mode(proxy_mode: object) -> str:
+        mode = str(proxy_mode or "auto").strip().lower()
+        return mode if mode in {"auto", "inherit", "direct"} else "auto"
+
+    def _newapi_nai_urlopen(self, req: urllib.request.Request, *, timeout: int, proxy_mode: str) -> object:
+        if proxy_mode == "inherit":
+            return urllib.request.urlopen(req, timeout=timeout)
+        if proxy_mode == "direct":
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            return opener.open(req, timeout=timeout)
+
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.URLError as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                raise
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            logger.warning(f"{self.log_prefix} NewAPI NAI 继承代理失败，尝试直连: {exc}")
+            return opener.open(req, timeout=timeout)
+
+    @classmethod
+    def _parse_newapi_nai_response(cls, response_data: object) -> Tuple[bool, str]:
+        if not isinstance(response_data, dict):
+            return False, "NewAPI 响应数据格式错误"
+        choices = response_data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return False, cls._extract_newapi_nai_error(response_data) or "NewAPI 未返回 choices"
+
+        content = cls._extract_newapi_nai_message_content(choices[0])
+        if not content:
+            return False, cls._extract_newapi_nai_error(response_data) or "NewAPI 未返回 message.content"
+
+        seeds = cls._extract_newapi_nai_seeds(content)
+        if seeds:
+            logger.info(f"NewAPI NAI 返回 seeds={seeds}, usage={response_data.get('usage')}")
+        else:
+            logger.info(f"NewAPI NAI 返回 usage={response_data.get('usage')}")
+
+        image_base64 = cls._extract_data_uri_image(content)
+        if image_base64:
+            try:
+                base64.b64decode(image_base64, validate=False)
+            except Exception:
+                return False, "NewAPI 返回的 base64 数据无法解码"
+            return True, image_base64
+
+        text_error = ""
+        try:
+            text_error = cls._extract_newapi_nai_error(json.loads(content.strip()))
+        except (TypeError, ValueError):
+            text_error = ""
+        return False, text_error or f"NewAPI 响应中未找到图片数据: {content[:200]}"
+
     def _make_newapi_nai_request(
         self,
         prompt: str,
@@ -552,6 +671,17 @@ class ImageClientMixin:
         seed = options.get("seed", None)
         if seed not in (None, "", -1):
             draw_payload["seed"] = int(seed)
+        if bool(options.get("quality_toggle", False)):
+            draw_payload["qualityToggle"] = True
+        if bool(options.get("auto_smea", False)):
+            draw_payload["autoSmea"] = True
+        if bool(options.get("variety_boost", False)):
+            draw_payload["variety_boost"] = True
+        extra_params = options.get("extra_params") or {}
+        if isinstance(extra_params, dict):
+            for key, value in extra_params.items():
+                if value not in (None, ""):
+                    draw_payload[str(key)] = value
 
         endpoint = f"{base_url.rstrip('/')}/chat/completions"
         payload = {
@@ -564,35 +694,52 @@ class ImageClientMixin:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {self._normalize_newapi_nai_token(api_key)}",
             "User-Agent": "Mozilla/5.0",
         }
         logger.info(f"{self.log_prefix} 发起 NewAPI NAI 绘图请求: model={model}, prompt={prompt[:80]}...")
         req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        timeout = int(options.get("timeout", 180) or 180)
+        retry_attempts = max(1, min(int(options.get("retry_attempts", 3) or 3), 5))
+        proxy_mode = self._normalize_newapi_nai_proxy_mode(options.get("proxy_mode", "auto"))
 
-        try:
-            with urllib.request.urlopen(req, timeout=int(options.get("timeout", 180) or 180)) as response:
-                response_body = response.read().decode("utf-8")
-                if not 200 <= response.status < 300:
-                    return False, f"NewAPI 请求失败 (状态码 {response.status})"
-                response_data = json.loads(response_body)
-
-            content = str(response_data.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
-            image_base64 = self._extract_data_uri_image(content)
-            if image_base64:
-                return True, image_base64
-            return False, f"NewAPI 响应中未找到图片数据: {content[:200]}"
-        except urllib.error.HTTPError as exc:
-            error_body = ""
+        for attempt in range(1, retry_attempts + 1):
             try:
-                error_body = exc.read().decode("utf-8")[:300]
-            except Exception:
-                pass
-            logger.error(f"{self.log_prefix} NewAPI HTTP 错误: {exc.code} - {error_body}")
-            return False, f"NewAPI HTTP 错误 {exc.code}: {error_body}"
-        except Exception as exc:
-            logger.error(f"{self.log_prefix} NewAPI 请求错误: {exc!r}", exc_info=True)
-            return False, str(exc)
+                with self._newapi_nai_urlopen(req, timeout=timeout, proxy_mode=proxy_mode) as response:
+                    response_body = response.read().decode("utf-8")
+                    if not 200 <= response.status < 300:
+                        return False, f"NewAPI 请求失败 (状态码 {response.status})"
+                    response_data = json.loads(response_body)
+
+                return self._parse_newapi_nai_response(response_data)
+            except urllib.error.HTTPError as exc:
+                error_body = ""
+                try:
+                    error_body = exc.read().decode("utf-8")[:300]
+                except Exception:
+                    pass
+                if exc.code in _NEWAPI_NAI_RETRYABLE_STATUS_CODES and attempt < retry_attempts:
+                    sleep_seconds = 6.0 if exc.code == 429 else 1.5 * attempt
+                    logger.warning(f"{self.log_prefix} NewAPI HTTP {exc.code}，{sleep_seconds:.1f}s 后重试")
+                    time.sleep(sleep_seconds)
+                    continue
+                logger.error(f"{self.log_prefix} NewAPI HTTP 错误: {exc.code} - {error_body}")
+                return False, f"NewAPI HTTP 错误 {exc.code}: {error_body}"
+            except urllib.error.URLError as exc:
+                if self._is_newapi_nai_retryable_error(exc) and attempt < retry_attempts:
+                    sleep_seconds = 1.5 * attempt
+                    logger.warning(f"{self.log_prefix} NewAPI 网络错误，{sleep_seconds:.1f}s 后重试: {exc}")
+                    time.sleep(sleep_seconds)
+                    continue
+                logger.error(f"{self.log_prefix} NewAPI 连接错误: {exc}")
+                return False, f"NewAPI 连接错误: {getattr(exc, 'reason', exc)}"
+            except json.JSONDecodeError as exc:
+                logger.error(f"{self.log_prefix} NewAPI JSON 解析失败: {exc}")
+                return False, "NewAPI 返回了非 JSON 响应"
+            except Exception as exc:
+                logger.error(f"{self.log_prefix} NewAPI 请求错误: {exc!r}", exc_info=True)
+                return False, str(exc)
+        return False, "NewAPI 请求失败"
 
     def _make_http_image_request(
         self,

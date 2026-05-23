@@ -114,6 +114,12 @@ def _build_api_params(client: ImageClientProtocol, model_config: Optional[dict])
                 "image_format": client.get_config("generation.newapi_nai_image_format", "png"),
                 "max_tokens": client.get_config("generation.newapi_nai_max_tokens", 100000),
                 "timeout": client.get_config("generation.newapi_nai_timeout", 180),
+                "retry_attempts": client.get_config("generation.newapi_nai_retry_attempts", 3),
+                "proxy_mode": client.get_config("generation.newapi_nai_proxy_mode", "auto"),
+                "quality_toggle": client.get_config("generation.newapi_nai_quality_toggle", True),
+                "auto_smea": client.get_config("generation.newapi_nai_auto_smea", False),
+                "variety_boost": client.get_config("generation.newapi_nai_variety_boost", False),
+                "extra_params": client.get_config("generation.newapi_nai_extra_params", {}),
             },
         )
 
@@ -159,6 +165,12 @@ def _build_api_params(client: ImageClientProtocol, model_config: Optional[dict])
             "image_format": model_config.get("newapi_nai_image_format", "png"),
             "max_tokens": model_config.get("newapi_nai_max_tokens", 100000),
             "timeout": model_config.get("newapi_nai_timeout", 180),
+            "retry_attempts": model_config.get("newapi_nai_retry_attempts", 3),
+            "proxy_mode": model_config.get("newapi_nai_proxy_mode", "auto"),
+            "quality_toggle": model_config.get("newapi_nai_quality_toggle", True),
+            "auto_smea": model_config.get("newapi_nai_auto_smea", False),
+            "variety_boost": model_config.get("newapi_nai_variety_boost", False),
+            "extra_params": model_config.get("newapi_nai_extra_params", {}),
         },
     )
 

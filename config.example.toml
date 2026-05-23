@@ -1,5 +1,5 @@
 # MaiBot_LLM2pic 插件配置
-# 版本: 4.0.0 - 双模型风格支持（anime + edit）
+# 版本: 4.2.0 - 出图保护与 NewAPI NAI 增强
 #
 # 本插件支持配置两个独立的图片生成模型：
 # - anime: 二次元/动漫风格（文生图，自拍模式强制使用）
@@ -12,7 +12,7 @@
 # ============================================================
 [plugin]
 enabled = true
-config_version = "4.1.0"
+config_version = "4.2.0"
 
 # ============================================================
 # 通用生成参数
@@ -29,6 +29,14 @@ custom_prompt_add = ""
 crop_enabled = false
 crop_position = "bottom"  # 可选: top, bottom, left, right
 crop_pixels = 40
+
+[generation_guard]
+# Tool 自动出图保护：减少误触发、重复触发和同群并发出图
+enabled = true
+pending_lock_enabled = true
+negative_intent_block_enabled = true
+explicit_request_min_interval_seconds = 30
+proactive_min_interval_seconds = 240
 
 # ============================================================
 # Anime 模型配置（二次元/动漫风格）
@@ -125,6 +133,12 @@ seed = -1
 image_format = "png"
 max_tokens = 100000
 timeout = 180
+retry_attempts = 3
+proxy_mode = "auto"  # auto=先继承环境代理，失败时直连；inherit=始终继承；direct=直连
+quality_toggle = true
+auto_smea = false
+variety_boost = false
+extra_params = {}
 
 # ============================================================
 # Edit 模型配置（图片编辑/改图）
@@ -179,7 +193,7 @@ system_prompt = ""
 # 组件启用配置
 # ============================================================
 [components]
-# 是否启用图片生成 Action（LLM 智能触发）
+# 是否启用图片生成 Tool（LLM 智能触发）
 enable_image_generation = true
 
 # 是否启用 /pic 指令

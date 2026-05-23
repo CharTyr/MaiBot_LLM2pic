@@ -25,7 +25,7 @@ from .generation_service import ImageGenerationRequest, generate_image
 
 logger = get_logger("MaiBot_LLM2pic")
 
-_CONFIG_VERSION = "4.1.0"
+_CONFIG_VERSION = "4.2.0"
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -51,6 +51,20 @@ class GenerationConfig(PluginConfigBase):
     crop_enabled: bool = Field(default=False, description="是否裁切生成图")
     crop_position: Literal["top", "bottom", "left", "right"] = Field(default="bottom", description="裁切位置")
     crop_pixels: int = Field(default=40, ge=0, description="裁切像素数")
+
+
+class GenerationGuardConfig(PluginConfigBase):
+    """自动出图保护。"""
+
+    __ui_label__ = "出图保护"
+    __ui_icon__ = "shield"
+    __ui_order__ = 3
+
+    enabled: bool = Field(default=True, description="是否启用 Tool 自动出图保护")
+    pending_lock_enabled: bool = Field(default=True, description="同一聊天流已有生图任务时拒绝新任务")
+    negative_intent_block_enabled: bool = Field(default=True, description="检测到用户明确不要画图时阻止自动出图")
+    explicit_request_min_interval_seconds: int = Field(default=30, ge=0, description="明确请求出图的最小间隔")
+    proactive_min_interval_seconds: int = Field(default=240, ge=0, description="LLM 主动出图的最小间隔")
 
 
 class RegexUrlEndpointConfig(PluginConfigBase):
@@ -128,6 +142,12 @@ class NewApiNaiEndpointConfig(PluginConfigBase):
     image_format: Literal["png", "webp"] = Field(default="png", description="返回图片格式")
     max_tokens: int = Field(default=100000, ge=1, description="最大预算 tokens")
     timeout: int = Field(default=180, ge=1, description="请求超时时间（秒）")
+    retry_attempts: int = Field(default=3, ge=1, le=5, description="429/5xx 或临时网络错误的重试次数")
+    proxy_mode: Literal["auto", "inherit", "direct"] = Field(default="auto", description="代理模式：auto、inherit 或 direct")
+    quality_toggle: bool = Field(default=True, description="是否透传 NovelAI 质量增强参数 qualityToggle")
+    auto_smea: bool = Field(default=False, description="是否透传 NovelAI autoSmea 参数")
+    variety_boost: bool = Field(default=False, description="是否透传 NovelAI variety_boost 参数")
+    extra_params: dict[str, Any] = Field(default_factory=dict, description="额外透传给 NewAPI NAI 内层 JSON 的参数")
 
 
 class AnimeConfig(PluginConfigBase):
@@ -155,7 +175,7 @@ class EditConfig(PluginConfigBase):
 
     __ui_label__ = "Edit"
     __ui_icon__ = "image-plus"
-    __ui_order__ = 3
+    __ui_order__ = 4
 
     enabled: bool = Field(default=False, description="是否启用 edit 风格")
     api_type: Literal["openai"] = Field(default="openai", description="图片编辑目前使用 OpenAI 兼容端点")
@@ -167,7 +187,7 @@ class LlmConfig(PluginConfigBase):
 
     __ui_label__ = "LLM"
     __ui_icon__ = "brain"
-    __ui_order__ = 4
+    __ui_order__ = 5
 
     model_name: str = Field(default="", description="用于生成提示词的 LLM 模型名，留空使用系统默认")
     context_message_limit: int = Field(default=20, ge=1, le=100, description="聊天记录条数上限")
@@ -180,7 +200,7 @@ class ComponentsConfig(PluginConfigBase):
 
     __ui_label__ = "组件"
     __ui_icon__ = "toggle-right"
-    __ui_order__ = 5
+    __ui_order__ = 6
 
     enable_image_generation: bool = Field(default=True, description="是否启用图片生成 Tool")
     enable_direct_pic_command: bool = Field(default=True, description="是否启用 /pic 指令")
@@ -191,6 +211,7 @@ class LLM2PicPluginConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
+    generation_guard: GenerationGuardConfig = Field(default_factory=GenerationGuardConfig)
     anime: AnimeConfig = Field(default_factory=AnimeConfig)
     edit: EditConfig = Field(default_factory=EditConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
@@ -236,9 +257,37 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
 
     config_model = LLM2PicPluginConfig
 
-    # 防重复调用冷却记录: {stream_id: last_trigger_timestamp}
-    _draw_cooldowns: dict = {}
-    _DRAW_COOLDOWN_SECONDS = 30  # draw_picture 同一聊天流冷却30秒
+    _pending_generation_streams: set[str] = set()
+    _last_guarded_draw_at: dict[str, float] = {}
+    _NEGATIVE_DRAW_INTENT_KEYWORDS = (
+        "别画",
+        "不要画",
+        "不用画",
+        "别出图",
+        "不要出图",
+        "不用出图",
+        "别生成图",
+        "不要生成图",
+        "文字回复就行",
+        "不要图片",
+        "别发图",
+        "no image",
+        "don't draw",
+        "do not draw",
+    )
+    _EXPLICIT_DRAW_INTENT_KEYWORDS = (
+        "画",
+        "出图",
+        "生成图",
+        "来一张",
+        "再来一张",
+        "自拍",
+        "配图",
+        "draw",
+        "image",
+        "picture",
+        "selfie",
+    )
 
     def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
         raw_config = deepcopy(dict(config_data)) if isinstance(config_data, Mapping) else {}
@@ -301,6 +350,12 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                     "newapi_nai_image_format": "image_format",
                     "newapi_nai_max_tokens": "max_tokens",
                     "newapi_nai_timeout": "timeout",
+                    "newapi_nai_retry_attempts": "retry_attempts",
+                    "newapi_nai_proxy_mode": "proxy_mode",
+                    "newapi_nai_quality_toggle": "quality_toggle",
+                    "newapi_nai_auto_smea": "auto_smea",
+                    "newapi_nai_variety_boost": "variety_boost",
+                    "newapi_nai_extra_params": "extra_params",
                 },
             }
             for old_key, new_key in prefix_map.get(api_type, {}).items():
@@ -323,6 +378,67 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         del config_data
         self.ctx.logger.info("MaiBot_LLM2pic 配置更新: scope=%s version=%s", scope, version)
 
+    @staticmethod
+    def _generation_stream_key(stream_id: str) -> str:
+        return stream_id or "__default__"
+
+    def _try_acquire_generation_lock(self, plugin_config: dict[str, Any], stream_id: str) -> bool:
+        guard_config = plugin_config.get("generation_guard", {})
+        if not _normalize_bool(guard_config.get("pending_lock_enabled", True)):
+            return True
+        key = self._generation_stream_key(stream_id)
+        if key in self._pending_generation_streams:
+            return False
+        self._pending_generation_streams.add(key)
+        return True
+
+    def _release_generation_lock(self, stream_id: str) -> None:
+        self._pending_generation_streams.discard(self._generation_stream_key(stream_id))
+
+    @staticmethod
+    def _last_chat_line(chat_messages: str) -> str:
+        lines = [line.strip() for line in str(chat_messages or "").splitlines() if line.strip()]
+        return lines[-1] if lines else ""
+
+    def _assess_draw_guard(
+        self,
+        *,
+        plugin_config: dict[str, Any],
+        stream_id: str,
+        description: str,
+        chat_messages: str,
+        selfie_mode: bool,
+    ) -> tuple[bool, str, str]:
+        guard_config = plugin_config.get("generation_guard", {})
+        if not _normalize_bool(guard_config.get("enabled", True)):
+            return True, "guard_disabled", ""
+
+        signal_text = f"{description}\n{self._last_chat_line(chat_messages)}".lower()
+        if _normalize_bool(guard_config.get("negative_intent_block_enabled", True)):
+            if any(keyword in signal_text for keyword in self._NEGATIVE_DRAW_INTENT_KEYWORDS):
+                return False, "blocked", "检测到用户明确表示不需要生成图片"
+
+        explicit_request = selfie_mode or any(keyword in signal_text for keyword in self._EXPLICIT_DRAW_INTENT_KEYWORDS)
+        category = "explicit" if explicit_request else "proactive"
+        interval_key = (
+            "explicit_request_min_interval_seconds"
+            if explicit_request
+            else "proactive_min_interval_seconds"
+        )
+        min_interval = int(guard_config.get(interval_key, 30 if explicit_request else 240) or 0)
+        if min_interval <= 0:
+            return True, category, ""
+
+        key = self._generation_stream_key(stream_id)
+        last_allowed_at = self._last_guarded_draw_at.get(key, 0)
+        elapsed = time.time() - last_allowed_at
+        if elapsed < min_interval:
+            return False, category, "同一聊天流刚刚生成过图片，已跳过本次自动出图"
+        return True, category, ""
+
+    def _mark_draw_guard_allowed(self, stream_id: str) -> None:
+        self._last_guarded_draw_at[self._generation_stream_key(stream_id)] = time.time()
+
     @Tool(
         "draw_picture",
         description=DrawPictureToolMetadata.tool_description,
@@ -340,57 +456,73 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         if not _normalize_bool(self._config_get("components.enable_image_generation", True)):
             return {"success": False, "error": "图片生成功能未启用"}
 
-        # 防重复调用：同一聊天流冷却期内拒绝
-        now = time.time()
-        if stream_id:
-            last_trigger = self._draw_cooldowns.get(stream_id, 0)
-            if now - last_trigger < self._DRAW_COOLDOWN_SECONDS:
-                logger.debug(f"[DrawPicture] 冷却中，跳过重复调用: stream={stream_id}")
-                return {"success": False, "error": "同一聊天流的图片生成正在冷却中"}
-            self._draw_cooldowns[stream_id] = now
+        if not self._try_acquire_generation_lock(plugin_config, stream_id):
+            return {"success": False, "error": "同一聊天流已有图片生成任务正在进行"}
 
-        # 先生成 prompt（快速，在 RPC 超时内完成）
-        proxy = _ToolRuntimeProxy(
-            self,
-            plugin_config=plugin_config,
-            stream_id=stream_id,
-            tool_args={
-                "description": description,
-                "selfie_mode": selfie_mode,
-            },
-            session_message=kwargs.get("message"),
-        )
-
-        # 获取聊天记录、生成提示词（都在30秒内）
-        original_description = str(proxy.tool_args.get("description", "") or "").strip()
-        selfie_mode_bool = _normalize_bool(proxy.tool_args.get("selfie_mode", False))
-
-        chat_messages_str = await proxy._get_recent_chat_messages()
-        persona = await proxy._get_persona()
-        custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
-
-        success, generated_prompt, llm_style = await proxy._generate_prompt_with_style(
-            user_request=original_description or "根据聊天内容生成一张合适的图片",
-            chat_messages=chat_messages_str,
-            persona=persona,
-            selfie_mode=selfie_mode_bool,
-            custom_system_prompt=custom_system_prompt,
-        )
-        if not success:
-            return {"success": False, "error": f"提示词生成失败: {generated_prompt}"}
-
-        # 快速返回，后台异步请求生图 API
-        asyncio.create_task(
-            self._background_generate_and_send(
+        task_started = False
+        try:
+            # 先生成 prompt（快速，在 RPC 超时内完成）
+            proxy = _ToolRuntimeProxy(
+                self,
                 plugin_config=plugin_config,
                 stream_id=stream_id,
-                generated_prompt=generated_prompt,
-                llm_style=llm_style,
-                selfie_mode_bool=selfie_mode_bool,
-                input_image_base64=None,
-                proxy=proxy,
+                tool_args={
+                    "description": description,
+                    "selfie_mode": selfie_mode,
+                },
+                session_message=kwargs.get("message"),
             )
-        )
+
+            # 获取聊天记录、生成提示词（都在30秒内）
+            original_description = str(proxy.tool_args.get("description", "") or "").strip()
+            selfie_mode_bool = _normalize_bool(proxy.tool_args.get("selfie_mode", False))
+
+            chat_messages_str = await proxy._get_recent_chat_messages()
+            allowed, guard_category, guard_error = self._assess_draw_guard(
+                plugin_config=plugin_config,
+                stream_id=stream_id,
+                description=original_description,
+                chat_messages=chat_messages_str,
+                selfie_mode=selfie_mode_bool,
+            )
+            if not allowed:
+                logger.info("[DrawPicture] 出图保护拦截: category=%s error=%s", guard_category, guard_error)
+                return {"success": False, "error": guard_error}
+
+            persona = await proxy._get_persona()
+            custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
+
+            success, generated_prompt, llm_style = await proxy._generate_prompt_with_style(
+                user_request=original_description or "根据聊天内容生成一张合适的图片",
+                chat_messages=chat_messages_str,
+                persona=persona,
+                selfie_mode=selfie_mode_bool,
+                custom_system_prompt=custom_system_prompt,
+            )
+            if not success:
+                return {"success": False, "error": f"提示词生成失败: {generated_prompt}"}
+
+            self._mark_draw_guard_allowed(stream_id)
+
+            # 快速返回，后台异步请求生图 API
+            asyncio.create_task(
+                self._background_generate_and_send(
+                    plugin_config=plugin_config,
+                    stream_id=stream_id,
+                    generated_prompt=generated_prompt,
+                    llm_style=llm_style,
+                    selfie_mode_bool=selfie_mode_bool,
+                    input_image_base64=None,
+                    proxy=proxy,
+                )
+            )
+            task_started = True
+        except Exception as exc:
+            logger.error("[DrawPicture] 启动生图任务失败: %s", exc, exc_info=True)
+            return {"success": False, "error": f"启动生图任务失败: {str(exc)[:80]}"}
+        finally:
+            if not task_started:
+                self._release_generation_lock(stream_id)
         await self._ctx_send_text("正在生成图片，请稍等...", stream_id)
         return {"success": True, "content": "已开始生成图片，完成后会直接发送。"}
 
@@ -422,6 +554,8 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 await self._ctx_send_text(f"画图出错了: {str(exc)[:80]}", stream_id)
             except Exception:
                 pass
+        finally:
+            self._release_generation_lock(stream_id)
 
     async def _background_generate_and_send_inner(
         self,
@@ -521,14 +655,22 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         if not style_router.is_style_available("edit"):
             return {"success": False, "error": "图片编辑功能未配置 edit 模型"}
 
-        # 后台异步执行，快速返回避免 RPC 超时
-        asyncio.create_task(
-            self._background_edit_picture(
-                plugin_config=plugin_config,
-                stream_id=stream_id,
-                description=description,
+        if not self._try_acquire_generation_lock(plugin_config, stream_id):
+            return {"success": False, "error": "同一聊天流已有图片生成任务正在进行"}
+
+        try:
+            # 后台异步执行，快速返回避免 RPC 超时
+            asyncio.create_task(
+                self._background_edit_picture(
+                    plugin_config=plugin_config,
+                    stream_id=stream_id,
+                    description=description,
+                )
             )
-        )
+        except Exception as exc:
+            self._release_generation_lock(stream_id)
+            logger.error("[EditPicture] 启动编辑任务失败: %s", exc, exc_info=True)
+            return {"success": False, "error": f"启动编辑任务失败: {str(exc)[:80]}"}
         await self._ctx_send_text("正在编辑图片，请稍等...", stream_id)
         return {"success": True, "content": "已开始编辑图片，完成后会直接发送。"}
 
@@ -552,6 +694,8 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 await self._ctx_send_text(f"图片编辑出错了: {str(exc)[:80]}", stream_id)
             except Exception:
                 pass
+        finally:
+            self._release_generation_lock(stream_id)
 
     async def _background_edit_picture_inner(
         self,
@@ -623,16 +767,24 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         if not raw_prompt:
             return True, "用法: /pic <prompt> | /pic anime <prompt> | /pic edit <prompt>", True
 
-        # 非空 prompt：后台异步生成
-        asyncio.create_task(
-            self._background_direct_pic(
-                plugin_config=plugin_config,
-                stream_id=stream_id,
-                raw_prompt=raw_prompt,
-                manual_style=manual_style,
-                session_message=kwargs.get("message"),
+        if not self._try_acquire_generation_lock(plugin_config, stream_id):
+            return True, "同一聊天流已有图片生成任务正在进行", True
+
+        try:
+            # 非空 prompt：后台异步生成
+            asyncio.create_task(
+                self._background_direct_pic(
+                    plugin_config=plugin_config,
+                    stream_id=stream_id,
+                    raw_prompt=raw_prompt,
+                    manual_style=manual_style,
+                    session_message=kwargs.get("message"),
+                )
             )
-        )
+        except Exception as exc:
+            self._release_generation_lock(stream_id)
+            logger.error("[DirectPic] 启动 /pic 任务失败: %s", exc, exc_info=True)
+            return True, f"/pic 启动失败: {str(exc)[:80]}", True
         return True, None, True
 
     async def _background_direct_pic(
@@ -645,26 +797,35 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         session_message: Any = None,
     ) -> None:
         """后台异步处理 /pic 命令。"""
-        proxy = _CommandRuntimeProxy(
-            self,
-            plugin_config=plugin_config,
-            stream_id=stream_id,
-            session_message=session_message,
-        )
+        try:
+            proxy = _CommandRuntimeProxy(
+                self,
+                plugin_config=plugin_config,
+                stream_id=stream_id,
+                session_message=session_message,
+            )
 
-        # 尝试提取输入图片
-        input_image_base64 = await proxy._extract_input_image()
-        await self._run_generation_and_send(
-            plugin_config=plugin_config,
-            stream_id=stream_id,
-            proxy=proxy,
-            request=ImageGenerationRequest(
-                prompt=raw_prompt,
-                manual_style=manual_style,
-                input_image_base64=input_image_base64,
-            ),
-            failure_prefix="/pic 失败了",
-        )
+            # 尝试提取输入图片
+            input_image_base64 = await proxy._extract_input_image()
+            await self._run_generation_and_send(
+                plugin_config=plugin_config,
+                stream_id=stream_id,
+                proxy=proxy,
+                request=ImageGenerationRequest(
+                    prompt=raw_prompt,
+                    manual_style=manual_style,
+                    input_image_base64=input_image_base64,
+                ),
+                failure_prefix="/pic 失败了",
+            )
+        except Exception as exc:
+            logger.error("[LLM2PicPlugin] /pic 后台任务异常: %s", exc, exc_info=True)
+            try:
+                await self._ctx_send_text(f"/pic 出错了: {str(exc)[:80]}", stream_id)
+            except Exception:
+                pass
+        finally:
+            self._release_generation_lock(stream_id)
 
 
 def create_plugin() -> LLM2PicPlugin:
