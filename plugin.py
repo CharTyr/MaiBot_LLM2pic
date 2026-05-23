@@ -385,6 +385,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         default_value: Any,
         order: int,
     ) -> dict[str, Any]:
+        hidden = False
         if isinstance(default_value, bool):
             field_type = "boolean"
             ui_type = "switch"
@@ -398,6 +399,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             field_type = "string"
             ui_type = "textarea"
             default_value = json.dumps(default_value, ensure_ascii=False, indent=2)
+            hidden = True
         else:
             field_type = "string"
             ui_type = "text"
@@ -430,7 +432,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             "placeholder": None,
             "hint": f"写入当前端点分组的 {field_name}",
             "icon": None,
-            "hidden": False,
+            "hidden": hidden,
             "disabled": False,
             "order": order,
             "input_type": None,
