@@ -12,6 +12,7 @@
 # ============================================================
 [plugin]
 enabled = true
+config_version = "4.1.0"
 
 # ============================================================
 # 通用生成参数
@@ -38,14 +39,15 @@ crop_pixels = 40
 # 是否启用此模型
 enabled = true
 
-# API 类型: "openai", "gradio", "sd_api" 或 "novelai"
+# API 类型: "openai", "gradio", "sd_api", "novelai" 或 "newapi_nai"
 # - openai: 使用 OpenAI 兼容的 chat/completions 端点
 # - gradio: 使用 Gradio API（如 HuggingFace Space）
 # - sd_api: 使用 Stable Diffusion API
 # - novelai: 使用 NovelAI 官方 API（需要 NovelAI 订阅）
+# - newapi_nai: 使用 NewAPI chat/completions 封装的 NAI 绘图渠道
 api_type = "gradio"
 
-# API 端点 URL
+# API 端点 URL（兼容旧配置；推荐改用下方按 api_type 分组的端点配置）
 # Gradio 示例: "https://tongyi-mai-z-image-turbo.hf.space"
 # OpenAI 示例: "https://api.openai.com/v1"
 # NovelAI: 留空（使用官方端点）
@@ -59,46 +61,70 @@ api_key = ""
 # 模型名称（仅 OpenAI 类型需要，如 "dall-e-3", "gpt-image-1"）
 model_name = ""
 
-# --- Gradio 专用参数（仅当 api_type = "gradio" 时生效）---
-# 图片分辨率
-# 可选: "512x512 ( 1:1 )", "1024x1024 ( 1:1 )", "1024x1536 ( 2:3 )", "720x1280 ( 9:16 )"
-gradio_resolution = "1024x1024 ( 1:1 )"
+# --- 按 api_type 分组的端点参数（优先于上方兼容旧配置）---
+[anime.regex_url]
+# URL 模板模式：$1 会替换为 URL encode 后的 prompt，可把旧正则端点的画师串、负面词等保留在这里
+base_url = ""
+custom_prompt_add = "{{{masterpiece,best quality}}},"
 
-# 推理步数（4-50，越大质量越好但越慢）
-gradio_steps = 8
+[anime.gradio]
+base_url = "https://tongyi-mai-z-image-turbo.hf.space"
+custom_prompt_add = ""
+resolution = "1024x1024 ( 1:1 )"
+steps = 8
+shift = 3
+timeout = 120
 
-# 时间偏移参数
-gradio_shift = 3
+[anime.openai]
+base_url = "https://api.openai.com/v1"
+api_key = ""
+model_name = "gpt-image-1"
+size = "1024x1024"
+custom_prompt_add = ""
 
-# 轮询超时时间（秒）
-gradio_timeout = 120
+[anime.sd_api]
+base_url = ""
+api_key = ""
+custom_prompt_add = ""
+negative_prompt = ""
+width = 832
+height = 1216
+steps = 28
+cfg = 7
+model_index = 9
+seed = -1
 
-# --- NovelAI 官方 API 专用参数（仅当 api_type = "novelai" 时生效）---
-# 使用 NovelAI 官方 API 时，base_url 可留空，api_key 填写你的 NovelAI Bearer Token
-# 模型名称
-novelai_model = "nai-diffusion-4-5-full"
+[anime.novelai]
+# 使用 NovelAI 官方 API 时，base_url 可留空，api_key 填写 NovelAI Bearer Token
+api_key = ""
+custom_prompt_add = ""
+model = "nai-diffusion-4-5-full"
+width = 832
+height = 1216
+steps = 28
+scale = 5.0
+sampler = "k_euler"
+negative_prompt = ""
+seed = -1
+timeout = 120
 
-# 图片尺寸（常用: 832x1216 竖图, 1216x832 横图, 1024x1024 方图）
-novelai_width = 832
-novelai_height = 1216
-
-# 推理步数（建议 23-28）
-novelai_steps = 28
-
-# CFG scale（建议 5-7）
-novelai_scale = 5.0
-
-# 采样器（可选: k_euler, k_euler_ancestral, k_dpmpp_2s_ancestral, k_dpmpp_sde 等）
-novelai_sampler = "k_euler"
-
-# 负面提示词
-novelai_negative_prompt = ""
-
-# 随机种子（-1 为随机）
-novelai_seed = -1
-
-# 请求超时时间（秒）
-novelai_timeout = 120
+[anime.newapi_nai]
+# base_url 填服务提供方给出的 NewAPI 地址，例如 "https://api.tuercha.com/v1"
+# api_key 填 NewAPI 密钥
+# model_name 使用 /v1/models 返回的模型 ID，例如 "nai-diffusion-4-5-full"
+base_url = ""
+api_key = ""
+model_name = "nai-diffusion-4-5-full"
+custom_prompt_add = "{{{masterpiece,best quality}}},"
+negative_prompt = "lowres, bad anatomy, bad hands, text, watermark"
+size = "portrait"  # 可选: portrait, landscape, square, "832x1216" 或 [832,1216]
+steps = 23
+scale = 5
+sampler = "k_euler_ancestral"
+seed = -1
+image_format = "png"
+max_tokens = 100000
+timeout = 180
 
 # ============================================================
 # Edit 模型配置（图片编辑/改图）
@@ -122,6 +148,13 @@ api_key = ""
 model_name = "gpt-image-2"
 
 # 该风格专用的附加提示词（留空则不添加）
+custom_prompt_add = ""
+
+[edit.openai]
+base_url = ""
+api_key = ""
+model_name = "gpt-image-2"
+size = ""
 custom_prompt_add = ""
 
 # ============================================================
