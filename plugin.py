@@ -319,7 +319,24 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             plugin_author=plugin_author,
         )
         self._flatten_endpoint_sections_for_webui(schema)
+        self._fix_textarea_fields_for_webui(schema)
         return schema
+
+    @staticmethod
+    def _fix_textarea_fields_for_webui(schema: dict[str, Any]) -> None:
+        sections = schema.get("sections")
+        if not isinstance(sections, dict):
+            return
+        llm_section = sections.get("llm")
+        if not isinstance(llm_section, dict):
+            return
+        fields = llm_section.get("fields")
+        if not isinstance(fields, dict):
+            return
+        system_prompt = fields.get("system_prompt")
+        if isinstance(system_prompt, dict):
+            system_prompt["ui_type"] = "textarea"
+            system_prompt["rows"] = 12
 
     @classmethod
     def _flatten_endpoint_sections_for_webui(cls, schema: dict[str, Any]) -> None:
