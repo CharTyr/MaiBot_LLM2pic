@@ -439,3 +439,25 @@ class _CommandRuntimeProxy(DirectPicCommand):
 
     async def send_image(self, image_base64: str) -> bool:
         return await self._runtime._ctx_send_image(image_base64, self._stream_id)
+
+    async def _get_persona(self) -> str:
+        return await self._runtime._ctx_get_persona()
+
+    async def _generate_prompt_with_style(
+        self,
+        *,
+        user_request: str,
+        chat_messages: str,
+        persona: str,
+        selfie_mode: bool,
+        nsfw_allowed: bool,
+        custom_system_prompt: str,
+    ) -> Tuple[bool, str, Optional[str]]:
+        return await self._runtime._ctx_generate_prompt_with_style(
+            user_request=user_request,
+            chat_messages=chat_messages,
+            persona=persona,
+            selfie_mode=selfie_mode,
+            nsfw_allowed=nsfw_allowed,
+            custom_system_prompt=custom_system_prompt,
+        )

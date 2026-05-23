@@ -1025,12 +1025,26 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
 
             # 尝试提取输入图片
             input_image_base64 = await proxy._extract_input_image()
+            if input_image_base64:
+                generated_prompt = raw_prompt
+            else:
+                success, generated_prompt, _llm_style = await proxy._generate_prompt_with_style(
+                    user_request=raw_prompt,
+                    chat_messages="",
+                    persona=await proxy._get_persona(),
+                    selfie_mode=False,
+                    nsfw_allowed=False,
+                    custom_system_prompt=str(proxy.get_config("llm.system_prompt", "") or ""),
+                )
+                if not success:
+                    await self._ctx_send_text(f"/pic 提示词生成失败: {str(generated_prompt)[:80]}", stream_id)
+                    return
             await self._run_generation_and_send(
                 plugin_config=plugin_config,
                 stream_id=stream_id,
                 proxy=proxy,
                 request=ImageGenerationRequest(
-                    prompt=raw_prompt,
+                    prompt=generated_prompt,
                     manual_style=manual_style,
                     input_image_base64=input_image_base64,
                 ),
