@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 import re
 
@@ -22,6 +23,16 @@ from .core.utils.prompt_postprocessor import (
 )
 
 logger = get_logger("MaiBot_LLM2pic")
+
+
+@dataclass
+class PromptGenerationResult:
+    success: bool
+    prompt: str = ""
+    style: Optional[str] = None
+    global_prompt: Optional[str] = None
+    characters: Optional[list[dict[str, Any]]] = None
+    error: str = ""
 
 
 def _bool_config(config: dict[str, Any], path: str, default: bool) -> bool:
@@ -146,7 +157,7 @@ async def generate_danbooru_prompt(
     selfie_mode: bool,
     nsfw_allowed: bool,
     custom_system_prompt: str = "",
-) -> tuple[bool, str, Optional[str], Optional[dict[str, Any]]]:
+) -> PromptGenerationResult:
     """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
     sfw_mode = bool(llm_config.get("danbooru_sfw_mode", True)) and not nsfw_allowed
@@ -175,17 +186,17 @@ async def generate_danbooru_prompt(
         )
     except Exception as exc:
         logger.error("[DanbooruPrompt] LLM 调用失败: %s", exc, exc_info=True)
-        return False, str(exc), None, None
+        return PromptGenerationResult(False, error=str(exc))
 
     if not isinstance(result, dict):
-        return False, f"LLM 返回非 dict: {type(result).__name__}", None, None
+        return PromptGenerationResult(False, error=f"LLM 返回非 dict: {type(result).__name__}")
     if not bool(result.get("success", False)):
-        return False, str(result.get("error") or "LLM生成失败"), None, None
+        return PromptGenerationResult(False, error=str(result.get("error") or "LLM生成失败"))
 
     response_text = str(result.get("response") or "").strip()
     generated_prompt = _cleanup_llm_prompt(response_text)
     if not generated_prompt:
-        return False, "LLM返回空提示词", None, None
+        return PromptGenerationResult(False, error="LLM返回空提示词")
 
     multi_payload = resolve_multi_character_payload(response_text, generated_prompt)
     selfie_appearance_policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
@@ -214,4 +225,10 @@ async def generate_danbooru_prompt(
         generated_prompt[:500],
     )
 
-    return True, generated_prompt, "anime", multi_payload
+    return PromptGenerationResult(
+        success=True,
+        prompt=generated_prompt,
+        style="anime",
+        global_prompt=str(multi_payload.get("global_text") or "").strip() if multi_payload else None,
+        characters=multi_payload.get("characters") if multi_payload else None,
+    )

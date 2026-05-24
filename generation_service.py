@@ -69,6 +69,7 @@ class ImageGenerationRequest:
     llm_style: Optional[str] = None
     input_image_base64: Optional[str] = None
     apply_prompt_add: bool = True
+    global_prompt: Optional[str] = None
     characters: Optional[list[dict[str, Any]]] = None
 
 
@@ -235,9 +236,16 @@ async def generate_image(
                 novelai_params=params.novelai_params if model_config else None,
             )
         elif api_type in {"newapi_nai", "newapi-nai"}:
+            newapi_prompt = final_prompt
+            if request.characters and request.global_prompt:
+                newapi_prompt = (
+                    client._build_final_prompt(request.global_prompt, model_config)
+                    if request.apply_prompt_add
+                    else request.global_prompt
+                )
             success, result = await asyncio.to_thread(
                 client._make_newapi_nai_request,
-                prompt=final_prompt,
+                prompt=newapi_prompt,
                 base_url=params.base_url,
                 api_key=params.api_key,
                 model=params.model,

@@ -4,10 +4,10 @@
 将生图逻辑桥接到 rdev 原生运行时上下文。
 """
 
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional
 import time
 
-from .danbooru_generator import generate_danbooru_prompt
+from .danbooru_generator import PromptGenerationResult, generate_danbooru_prompt
 from .utils import download_image_to_base64, _peel_envelope
 from .style_router import LLMOutputParser, DEFAULT_SYSTEM_PROMPT
 from .actions import DrawPictureToolMetadata
@@ -285,7 +285,7 @@ class _RuntimeBridgeMixin:
         selfie_mode: bool,
         nsfw_allowed: bool = False,
         custom_system_prompt: str = "",
-    ) -> Tuple[bool, str, Optional[str], Optional[dict[str, Any]]]:
+    ) -> PromptGenerationResult:
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
             target_model = await self._ctx_get_llm_model_name()
             return await generate_danbooru_prompt(
@@ -333,23 +333,23 @@ class _RuntimeBridgeMixin:
             )
         except Exception as exc:
             logger.error("[LLM2picBridge] ctx.llm.generate 失败: %s", exc, exc_info=True)
-            return False, str(exc), None, None
+            return PromptGenerationResult(False, error=str(exc))
 
         result = _peel_envelope(result)
         if not isinstance(result, dict):
-            return False, f"LLM 返回非 dict: {type(result).__name__}", None, None
+            return PromptGenerationResult(False, error=f"LLM 返回非 dict: {type(result).__name__}")
 
         success = bool(result.get("success", False))
         response_text = str(result.get("response") or "").strip()
         if not success:
-            return False, str(result.get("error") or "LLM生成失败"), None, None
+            return PromptGenerationResult(False, error=str(result.get("error") or "LLM生成失败"))
         if not response_text:
-            return False, "LLM返回空响应", None, None
+            return PromptGenerationResult(False, error="LLM返回空响应")
 
         prompt, style = LLMOutputParser.parse(response_text)
         if prompt:
-            return True, prompt, style, None
-        return True, response_text, style, None
+            return PromptGenerationResult(True, prompt=prompt, style=style)
+        return PromptGenerationResult(True, prompt=response_text, style=style)
 
 
 class _ToolRuntimeProxy(DrawPictureToolMetadata):
@@ -402,7 +402,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         selfie_mode: bool,
         nsfw_allowed: bool,
         custom_system_prompt: str,
-    ) -> Tuple[bool, str, Optional[str], Optional[dict[str, Any]]]:
+    ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
             chat_messages=chat_messages,
@@ -452,7 +452,7 @@ class _CommandRuntimeProxy(DirectPicCommand):
         selfie_mode: bool,
         nsfw_allowed: bool,
         custom_system_prompt: str,
-    ) -> Tuple[bool, str, Optional[str], Optional[dict[str, Any]]]:
+    ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
             chat_messages=chat_messages,
