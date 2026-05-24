@@ -47,6 +47,7 @@ class ImageClientProtocol(Protocol):
         api_key: str,
         model: str,
         params: Optional[dict] = None,
+        characters: Optional[list[dict[str, Any]]] = None,
     ) -> Tuple[bool, str]: ...
 
     def _make_http_image_request(
@@ -68,6 +69,7 @@ class ImageGenerationRequest:
     llm_style: Optional[str] = None
     input_image_base64: Optional[str] = None
     apply_prompt_add: bool = True
+    characters: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass
@@ -240,6 +242,7 @@ async def generate_image(
                 api_key=params.api_key,
                 model=params.model,
                 params=params.newapi_nai_params,
+                characters=request.characters,
             )
         elif api_type == "regex_url":
             success, result = await asyncio.to_thread(

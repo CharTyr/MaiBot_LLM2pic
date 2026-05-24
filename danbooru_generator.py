@@ -9,12 +9,14 @@ import re
 from src.common.logger import get_logger
 
 from .core.rules.prompt_rules import PROMPT_GENERATOR_JSON_TEMPLATE, SFW_PROMPT_GENERATOR_JSON_TEMPLATE
-from .core.services.danbooru_online_retriever import get_online_retriever
-from .core.services.tag_retriever import get_tag_retriever
-from .core.utils.prompt_output_parser import parse_prompt_from_structured_output
+from .core.services.tag_candidate_resolver import resolve_tag_candidates
+from .core.utils.prompt_output_parser import parse_prompt_from_structured_output, resolve_multi_character_payload
 from .core.utils.prompt_postprocessor import (
+    normalize_characters_order,
     normalize_prompt_order,
+    remove_selfie_appearance_from_characters,
     remove_selfie_appearance_tags,
+    sanitize_sfw_characters,
     sanitize_sfw_prompt,
     user_mentions_appearance,
 )
@@ -95,45 +97,42 @@ def _render_generator_prompt(
     return prompt
 
 
-async def _retrieve_tag_candidates(config: dict[str, Any], query: str) -> str:
-    retriever_config = config.get("tag_retriever")
-    if not isinstance(retriever_config, dict) or not retriever_config.get("enabled", False):
-        return ""
+def _postprocess_multi_character_payload(
+    payload: Optional[dict[str, Any]],
+    *,
+    user_request: str,
+    selfie_mode: bool,
+    sfw_mode: bool,
+    enforce_tag_order: bool,
+    selfie_appearance_policy: str,
+) -> Optional[dict[str, Any]]:
+    if not payload:
+        return None
 
-    mode = str(retriever_config.get("mode", "online") or "online").strip().lower()
-    try:
-        if mode == "online":
-            retriever = get_online_retriever(
-                enabled=True,
-                base_url=retriever_config.get("api_url", "https://sakizuki-danboorusearch.hf.space/api"),
-                timeout=retriever_config.get("timeout", 90.0),
-                search_limit=retriever_config.get("search_limit", 30),
-                search_top_k=retriever_config.get("search_top_k", 5),
-                related_limit=retriever_config.get("related_limit", 20),
-                related_seed_count=retriever_config.get("related_seed_count", 8),
-                show_nsfw=retriever_config.get("show_nsfw", False),
-                popularity_weight=retriever_config.get("popularity_weight", 0.15),
-            )
-            results = await retriever.retrieve(query=query) if retriever else {"search": [], "related": []}
-            if results.get("search") or results.get("related"):
-                return retriever.format_candidates(results)
-            if not retriever_config.get("fallback_local", True):
-                return ""
+    global_text = str(payload.get("global_text") or "").strip()
+    raw_characters = payload.get("characters")
+    if not global_text or not isinstance(raw_characters, list):
+        return None
 
-        local_retriever = get_tag_retriever(
-            enabled=True,
-            top_k=retriever_config.get("top_k", 20),
-            min_score=retriever_config.get("min_score", 0.3),
-        )
-        local_results = await local_retriever.retrieve(
-            query=query,
-            top_k=retriever_config.get("top_k", 20),
-            min_score=retriever_config.get("min_score", 0.3),
-        ) if local_retriever else []
-        return local_retriever.format_candidates(local_results) if local_results else ""
-    except Exception as exc:
-        logger.warning("[DanbooruPrompt] Tag 检索失败，跳过: %s", exc)
-        return ""
+    characters = [dict(item) for item in raw_characters if isinstance(item, dict)]
+    if len(characters) < 2:
+        return None
+
+    if selfie_mode and not user_mentions_appearance(user_request) and selfie_appearance_policy in {"auto", "never"}:
+        global_text, characters = remove_selfie_appearance_from_characters(global_text, characters)
+    if enforce_tag_order:
+        global_text, characters = normalize_characters_order(global_text, characters)
+    if sfw_mode:
+        global_text, characters = sanitize_sfw_characters(global_text, characters)
+
+    if len(characters) < 2 or not global_text.strip():
+        return None
+
+    return {
+        "global_text": global_text.strip(),
+        "characters": characters,
+        "has_coords": bool(payload.get("has_coords")) and all(str(item.get("position") or "").strip() for item in characters),
+    }
 
 
 async def generate_danbooru_prompt(
@@ -147,12 +146,17 @@ async def generate_danbooru_prompt(
     selfie_mode: bool,
     nsfw_allowed: bool,
     custom_system_prompt: str = "",
-) -> tuple[bool, str, Optional[str]]:
+) -> tuple[bool, str, Optional[str], Optional[dict[str, Any]]]:
     """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
     sfw_mode = bool(llm_config.get("danbooru_sfw_mode", True)) and not nsfw_allowed
     template = SFW_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else PROMPT_GENERATOR_JSON_TEMPLATE
-    tag_candidates = await _retrieve_tag_candidates(config, user_request)
+    retriever_config = config.get("tag_retriever")
+    tag_candidates = await resolve_tag_candidates(
+        retriever_config if isinstance(retriever_config, dict) else {},
+        user_request,
+        log_prefix="[DanbooruPrompt]",
+    )
     full_prompt = _render_generator_prompt(
         template=template,
         user_request=user_request,
@@ -171,26 +175,36 @@ async def generate_danbooru_prompt(
         )
     except Exception as exc:
         logger.error("[DanbooruPrompt] LLM 调用失败: %s", exc, exc_info=True)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
     if not isinstance(result, dict):
-        return False, f"LLM 返回非 dict: {type(result).__name__}", None
+        return False, f"LLM 返回非 dict: {type(result).__name__}", None, None
     if not bool(result.get("success", False)):
-        return False, str(result.get("error") or "LLM生成失败"), None
+        return False, str(result.get("error") or "LLM生成失败"), None, None
 
     response_text = str(result.get("response") or "").strip()
     generated_prompt = _cleanup_llm_prompt(response_text)
     if not generated_prompt:
-        return False, "LLM返回空提示词", None
+        return False, "LLM返回空提示词", None, None
 
+    multi_payload = resolve_multi_character_payload(response_text, generated_prompt)
+    selfie_appearance_policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
+    enforce_tag_order = _bool_config(config, "llm.enforce_tag_order", True)
     if selfie_mode and not user_mentions_appearance(user_request):
-        policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
-        if policy in {"auto", "never"}:
+        if selfie_appearance_policy in {"auto", "never"}:
             generated_prompt = remove_selfie_appearance_tags(generated_prompt)
-    if _bool_config(config, "llm.enforce_tag_order", True):
+    if enforce_tag_order:
         generated_prompt = normalize_prompt_order(generated_prompt)
     if sfw_mode:
         generated_prompt = sanitize_sfw_prompt(generated_prompt)
+    multi_payload = _postprocess_multi_character_payload(
+        multi_payload,
+        user_request=user_request,
+        selfie_mode=selfie_mode,
+        sfw_mode=sfw_mode,
+        enforce_tag_order=enforce_tag_order,
+        selfie_appearance_policy=selfie_appearance_policy,
+    )
 
     logger.info(
         "[DanbooruPrompt] generated sfw=%s nsfw_allowed=%s selfie=%s tags=%s",
@@ -200,4 +214,4 @@ async def generate_danbooru_prompt(
         generated_prompt[:500],
     )
 
-    return True, generated_prompt, "anime"
+    return True, generated_prompt, "anime", multi_payload

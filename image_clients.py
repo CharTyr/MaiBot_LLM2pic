@@ -2,7 +2,7 @@
 
 from http.client import IncompleteRead
 from io import BytesIO
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import asyncio
 import base64
 import json
@@ -30,6 +30,8 @@ logger = get_logger("MaiBot_LLM2pic")
 
 _NEWAPI_NAI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _NEWAPI_NAI_SEEDS_PATTERN = re.compile(r"<!--\s*seeds:\s*(\[[^\]]*])\s*-->")
+_NEWAPI_NAI_POSITION_GRID_RE = re.compile(r"^[A-E][1-5]$")
+_NEWAPI_NAI_MULTI_CHARACTER_MODEL_KEYWORDS = ("nai-diffusion-4",)
 
 
 class ImageClientMixin:
@@ -596,6 +598,47 @@ class ImageClientMixin:
         mode = str(proxy_mode or "auto").strip().lower()
         return mode if mode in {"auto", "inherit", "direct"} else "auto"
 
+    @staticmethod
+    def _normalize_newapi_nai_characters(characters: Optional[list[dict[str, Any]]]) -> list[dict[str, str]]:
+        if not characters:
+            return []
+
+        cleaned: list[dict[str, str]] = []
+        for item in characters:
+            if not isinstance(item, dict):
+                continue
+            char_prompt = str(item.get("prompt") or "").strip()
+            if not char_prompt:
+                continue
+            raw_position = str(item.get("position") or "").strip().upper()
+            entry = {
+                "prompt": char_prompt,
+                "negative_prompt": str(item.get("negative_prompt") or "").strip(),
+                "position": raw_position if _NEWAPI_NAI_POSITION_GRID_RE.match(raw_position) else "",
+            }
+            cleaned.append(entry)
+
+        if len(cleaned) < 2:
+            return []
+        if any(not item["position"] for item in cleaned):
+            for item in cleaned:
+                item["position"] = ""
+
+        result: list[dict[str, str]] = []
+        for item in cleaned:
+            entry = {"prompt": item["prompt"]}
+            if item["negative_prompt"]:
+                entry["negative_prompt"] = item["negative_prompt"]
+            if item["position"]:
+                entry["position"] = item["position"]
+            result.append(entry)
+        return result
+
+    @staticmethod
+    def _newapi_nai_supports_characters(model: str) -> bool:
+        lowered = str(model or "").lower()
+        return any(keyword in lowered for keyword in _NEWAPI_NAI_MULTI_CHARACTER_MODEL_KEYWORDS)
+
     def _newapi_nai_urlopen(self, req: urllib.request.Request, *, timeout: int, proxy_mode: str) -> object:
         if proxy_mode == "inherit":
             return urllib.request.urlopen(req, timeout=timeout)
@@ -652,6 +695,7 @@ class ImageClientMixin:
         api_key: str,
         model: str,
         params: Optional[dict] = None,
+        characters: Optional[list[dict[str, Any]]] = None,
     ) -> Tuple[bool, str]:
         """调用 NewAPI chat/completions 形式的 NAI 绘图渠道。"""
         options = params or {}
@@ -677,6 +721,15 @@ class ImageClientMixin:
             draw_payload["autoSmea"] = True
         if bool(options.get("variety_boost", False)):
             draw_payload["variety_boost"] = True
+        normalized_characters = self._normalize_newapi_nai_characters(characters)
+        if normalized_characters and self._newapi_nai_supports_characters(model):
+            draw_payload["characters"] = normalized_characters
+            draw_payload["use_coords"] = all("position" in item for item in normalized_characters)
+            draw_payload["use_order"] = True
+        elif normalized_characters:
+            logger.warning(
+                f"{self.log_prefix} NewAPI NAI 模型 {model!r} 不支持 characters[]，已降级为单 prompt"
+            )
         extra_params = options.get("extra_params") or {}
         if isinstance(extra_params, dict):
             for key, value in extra_params.items():

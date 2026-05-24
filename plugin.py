@@ -709,7 +709,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             persona = await proxy._get_persona()
             custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
 
-            success, generated_prompt, llm_style = await proxy._generate_prompt_with_style(
+            success, generated_prompt, llm_style, multi_payload = await proxy._generate_prompt_with_style(
                 user_request=original_description or "根据聊天内容生成一张合适的图片",
                 chat_messages=chat_messages_str,
                 persona=persona,
@@ -719,6 +719,10 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             )
             if not success:
                 return {"success": False, "error": f"提示词生成失败: {generated_prompt}"}
+            characters = None
+            if isinstance(multi_payload, dict):
+                raw_characters = multi_payload.get("characters")
+                characters = raw_characters if isinstance(raw_characters, list) else None
 
             self._mark_draw_guard_allowed(stream_id)
 
@@ -729,6 +733,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                     stream_id=stream_id,
                     generated_prompt=generated_prompt,
                     llm_style=llm_style,
+                    characters=characters,
                     selfie_mode_bool=selfie_mode_bool,
                     input_image_base64=None,
                     proxy=proxy,
@@ -751,6 +756,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         stream_id: str,
         generated_prompt: str,
         llm_style: Optional[str],
+        characters: Optional[list[dict[str, Any]]],
         selfie_mode_bool: bool,
         input_image_base64: Optional[str],
         proxy: _ToolRuntimeProxy,
@@ -762,6 +768,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 stream_id=stream_id,
                 generated_prompt=generated_prompt,
                 llm_style=llm_style,
+                characters=characters,
                 selfie_mode_bool=selfie_mode_bool,
                 input_image_base64=input_image_base64,
                 proxy=proxy,
@@ -782,6 +789,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         stream_id: str,
         generated_prompt: str,
         llm_style: Optional[str],
+        characters: Optional[list[dict[str, Any]]],
         selfie_mode_bool: bool,
         input_image_base64: Optional[str],
         proxy: _ToolRuntimeProxy,
@@ -795,6 +803,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 prompt=generated_prompt,
                 selfie_mode=selfie_mode_bool,
                 llm_style=llm_style,
+                characters=characters,
                 input_image_base64=input_image_base64,
             ),
             failure_prefix="画图失败了",
@@ -1028,10 +1037,11 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
 
             # 尝试提取输入图片
             input_image_base64 = await proxy._extract_input_image()
+            characters = None
             if input_image_base64:
                 generated_prompt = raw_prompt
             else:
-                success, generated_prompt, _llm_style = await proxy._generate_prompt_with_style(
+                success, generated_prompt, _llm_style, multi_payload = await proxy._generate_prompt_with_style(
                     user_request=raw_prompt,
                     chat_messages="",
                     persona=await proxy._get_persona(),
@@ -1042,6 +1052,9 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 if not success:
                     await self._ctx_send_text(f"/pic 提示词生成失败: {str(generated_prompt)[:80]}", stream_id)
                     return
+                if isinstance(multi_payload, dict):
+                    raw_characters = multi_payload.get("characters")
+                    characters = raw_characters if isinstance(raw_characters, list) else None
             await self._run_generation_and_send(
                 plugin_config=plugin_config,
                 stream_id=stream_id,
@@ -1050,6 +1063,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     prompt=generated_prompt,
                     manual_style=manual_style,
                     input_image_base64=input_image_base64,
+                    characters=characters,
                 ),
                 failure_prefix="/pic 失败了",
             )
