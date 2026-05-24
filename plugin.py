@@ -251,8 +251,11 @@ _DRAW_PICTURE_TOOL_PARAMETERS = [
     ToolParameterInfo(
         name="description",
         param_type=ToolParamType.STRING,
-        description="用户想要生成的图片描述，可以是中文或英文；留空时会根据聊天上下文生成合适图片。",
-        required=False,
+        description=(
+            "用户想要生成的图片描述，可以是中文或英文。必须包含用户明确指定的主体/角色名/动作/场景；"
+            "禁止把普通角色请求改成东雪莲或你自己。"
+        ),
+        required=True,
         default="",
     ),
     ToolParameterInfo(
@@ -693,6 +696,10 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             original_description = str(proxy.tool_args.get("description", "") or "").strip()
             selfie_mode_bool = _normalize_bool(proxy.tool_args.get("selfie_mode", False))
             nsfw_allowed_bool = _normalize_bool(proxy.tool_args.get("nsfw_allowed", False))
+            if not original_description:
+                if not selfie_mode_bool:
+                    return {"success": False, "error": "调用 draw_picture 时必须在 description 中写明用户要画的主体"}
+                original_description = "画东雪莲/Azuma Seren 的自拍或当前状态"
 
             chat_messages_str = await proxy._get_recent_chat_messages()
             allowed, guard_category, guard_error = self._assess_draw_guard(

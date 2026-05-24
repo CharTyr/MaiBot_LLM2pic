@@ -15,10 +15,13 @@ from .core.utils.prompt_output_parser import parse_prompt_from_structured_output
 from .core.utils.prompt_postprocessor import (
     normalize_characters_order,
     normalize_prompt_order,
+    remove_self_character_from_characters,
+    remove_self_character_tags,
     remove_selfie_appearance_from_characters,
     remove_selfie_appearance_tags,
     sanitize_sfw_characters,
     sanitize_sfw_prompt,
+    user_requests_self_character,
     user_mentions_appearance,
 )
 
@@ -113,6 +116,7 @@ def _postprocess_multi_character_payload(
     *,
     user_request: str,
     selfie_mode: bool,
+    self_character_requested: bool,
     sfw_mode: bool,
     enforce_tag_order: bool,
     selfie_appearance_policy: str,
@@ -129,6 +133,12 @@ def _postprocess_multi_character_payload(
     if len(characters) < 2:
         return None
 
+    if not self_character_requested:
+        global_text, characters = remove_self_character_from_characters(
+            global_text,
+            characters,
+            remove_persona_appearance=not user_mentions_appearance(user_request),
+        )
     if selfie_mode and not user_mentions_appearance(user_request) and selfie_appearance_policy in {"auto", "never"}:
         global_text, characters = remove_selfie_appearance_from_characters(global_text, characters)
     if enforce_tag_order:
@@ -201,6 +211,12 @@ async def generate_danbooru_prompt(
     multi_payload = resolve_multi_character_payload(response_text, generated_prompt)
     selfie_appearance_policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
     enforce_tag_order = _bool_config(config, "llm.enforce_tag_order", True)
+    self_character_requested = user_requests_self_character(user_request)
+    if not self_character_requested:
+        generated_prompt = remove_self_character_tags(
+            generated_prompt,
+            remove_persona_appearance=not user_mentions_appearance(user_request),
+        )
     if selfie_mode and not user_mentions_appearance(user_request):
         if selfie_appearance_policy in {"auto", "never"}:
             generated_prompt = remove_selfie_appearance_tags(generated_prompt)
@@ -212,6 +228,7 @@ async def generate_danbooru_prompt(
         multi_payload,
         user_request=user_request,
         selfie_mode=selfie_mode,
+        self_character_requested=self_character_requested,
         sfw_mode=sfw_mode,
         enforce_tag_order=enforce_tag_order,
         selfie_appearance_policy=selfie_appearance_policy,
