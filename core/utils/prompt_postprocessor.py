@@ -312,6 +312,10 @@ def user_requests_self_character(user_request: str) -> bool:
         for token in (
             "东雪莲",
             "東雪蓮",
+            "冬雪莲",
+            "冬雪蓮",
+            "莲莲",
+            "蓮蓮",
             "azuma seren",
             "azumase",
             "azumaren",

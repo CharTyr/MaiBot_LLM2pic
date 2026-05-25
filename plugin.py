@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any, Literal, Optional
 import asyncio
 import json
+import re
 import time
 
 from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
@@ -253,7 +254,7 @@ _DRAW_PICTURE_TOOL_PARAMETERS = [
         param_type=ToolParamType.STRING,
         description=(
             "用户想要生成的图片描述，可以是中文或英文。必须包含用户明确指定的主体/角色名/动作/场景；"
-            "禁止把普通角色请求改成东雪莲或你自己。"
+            "禁止把普通角色请求改成东雪莲或你自己；只是 @你/提到你/问你问题时禁止调用。"
         ),
         required=True,
         default="",
@@ -326,6 +327,14 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         "image",
         "picture",
         "selfie",
+    )
+    _EXPLICIT_DRAW_INTENT_RE = re.compile(
+        r"(?:^|[\s:：，,。！!？?])(?:画|绘制|生成|做|整)(?:一个|一张|个|张|点|些)?"
+        r"|(?:画|出|生成|做|来|发|整|给|帮|求|想看|看看).{0,8}(?:图|图片|照片|画|自拍)"
+        r"|(?:图|图片|照片|画|自拍).{0,8}(?:画|出|生成|做|来|发|整|给|帮|求|想看|看看)"
+        r"|(?:draw|generate|make|send).{0,16}(?:image|picture|selfie)"
+        r"|(?:image|picture|selfie).{0,16}(?:draw|generate|make|send)",
+        re.IGNORECASE,
     )
 
     def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
@@ -630,12 +639,21 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         if not _normalize_bool(guard_config.get("enabled", True)):
             return True, "guard_disabled", ""
 
-        signal_text = f"{description}\n{self._last_chat_line(chat_messages)}".lower()
+        last_chat_line = self._last_chat_line(chat_messages)
+        signal_text = f"{description}\n{last_chat_line}".lower()
         if _normalize_bool(guard_config.get("negative_intent_block_enabled", True)):
             if any(keyword in signal_text for keyword in self._NEGATIVE_DRAW_INTENT_KEYWORDS):
                 return False, "blocked", "检测到用户明确表示不需要生成图片"
 
-        explicit_request = selfie_mode or any(keyword in signal_text for keyword in self._EXPLICIT_DRAW_INTENT_KEYWORDS)
+        explicit_request = bool(selfie_mode or self._EXPLICIT_DRAW_INTENT_RE.search(signal_text))
+        if not explicit_request and any(keyword in signal_text for keyword in self._EXPLICIT_DRAW_INTENT_KEYWORDS):
+            logger.info(
+                "[DrawPicture] 疑似非明确出图触发，按主动出图保护处理: description=%s last_chat=%s",
+                description[:80],
+                last_chat_line[:80],
+            )
+        if not explicit_request:
+            return False, "blocked", "未检测到用户明确要求生成图片"
         category = "explicit" if explicit_request else "proactive"
         interval_key = (
             "explicit_request_min_interval_seconds"
