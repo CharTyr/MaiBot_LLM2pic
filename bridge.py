@@ -4,6 +4,7 @@
 将生图逻辑桥接到 rdev 原生运行时上下文。
 """
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 import time
 
@@ -16,6 +17,54 @@ from .commands import DirectPicCommand
 from src.common.logger import get_logger
 
 logger = get_logger("MaiBot_LLM2pic")
+
+
+@dataclass(frozen=True)
+class _LLMTarget:
+    task_name: str = "planner"
+    model_name: Optional[str] = None
+
+
+class _FallbackLLMProxy:
+    """优先直连指定具体模型，失败后回退任务组。"""
+
+    def __init__(self, runtime: "_RuntimeBridgeMixin", target: _LLMTarget) -> None:
+        self._runtime = runtime
+        self._target = target
+
+    async def generate(self, **kwargs: Any) -> dict[str, Any]:
+        prompt = kwargs.get("prompt")
+        temperature = kwargs.get("temperature")
+        max_tokens = kwargs.get("max_tokens")
+        if self._target.model_name:
+            try:
+                result = await self._runtime._ctx_generate_with_direct_model(
+                    prompt=prompt,
+                    task_name=self._target.task_name,
+                    model_name=self._target.model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                if isinstance(result, dict) and bool(result.get("success", False)) and str(result.get("response") or "").strip():
+                    return result
+                logger.warning(
+                    "[LLM2picBridge] 指定模型 %s 生成失败，将回退任务 %s: %s",
+                    self._target.model_name,
+                    self._target.task_name,
+                    str((result or {}).get("error") if isinstance(result, dict) else result)[:120],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[LLM2picBridge] 指定模型 %s 调用异常，将回退任务 %s: %s",
+                    self._target.model_name,
+                    self._target.task_name,
+                    exc,
+                    exc_info=True,
+                )
+
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs["model"] = self._target.task_name
+        return await self._runtime.ctx.llm.generate(**fallback_kwargs)
 
 
 class _RuntimeBridgeMixin:
@@ -130,30 +179,54 @@ class _RuntimeBridgeMixin:
         return "\n".join(persona_parts)
 
     async def _ctx_get_llm_model_name(self) -> str:
+        return (await self._ctx_resolve_llm_target()).task_name
+
+    async def _ctx_resolve_llm_target(self) -> _LLMTarget:
         custom_model_name = str(self._config_get("llm.model_name", "") or "").strip()
         if not custom_model_name:
-            return "planner"
+            return _LLMTarget()
 
         try:
+            from src.llm_models.utils_model import TempMethodsLLMUtils
             from src.services import llm_service
 
             available_models = llm_service.get_available_models()
             if custom_model_name in available_models:
-                return custom_model_name
+                return _LLMTarget(task_name=custom_model_name)
 
-            # rdev 重构后的 ctx.llm.generate 接受的是任务名（planner/utils 等），
-            # 旧版 LLM2PIC 配置里常保存具体模型名。这里把具体模型名映射回包含它的任务，
-            # 避免把旧模型名原样传给运行时后触发"未找到模型配置"。
-            for task_name, task_config in available_models.items():
-                model_list = [str(item).strip() for item in getattr(task_config, "model_list", []) if str(item).strip()]
-                if custom_model_name in model_list:
-                    logger.info(f"[LLM2picBridge] 将旧版模型名 {custom_model_name} 映射到运行时任务 {task_name}")
-                    return str(task_name)
+            TempMethodsLLMUtils.get_model_info_by_name(custom_model_name)
+            logger.info("[LLM2picBridge] 将直连指定 LLM 模型 %s，失败时回退 planner", custom_model_name)
+            return _LLMTarget(task_name="planner", model_name=custom_model_name)
         except Exception as exc:
-            logger.warning(f"[LLM2picBridge] 解析 LLM 任务名失败，将回退 planner: {exc}")
+            logger.warning(
+                "[LLM2picBridge] 配置的 LLM 模型/任务 %s 在当前运行时不可用，将回退 planner: %s",
+                custom_model_name,
+                exc,
+            )
+            return _LLMTarget()
 
-        logger.warning(f"[LLM2picBridge] 配置的 LLM 模型/任务 {custom_model_name} 在当前运行时不可用，将回退 planner")
-        return "planner"
+    async def _ctx_generate_with_direct_model(
+        self,
+        *,
+        prompt: Any,
+        task_name: str,
+        model_name: str,
+        temperature: Any = None,
+        max_tokens: Any = None,
+    ) -> dict[str, Any]:
+        from src.services import llm_service
+
+        result = await llm_service.generate(
+            llm_service.LLMServiceRequest(
+                task_name=task_name,
+                request_type=f"plugin.{getattr(self, 'plugin_id', 'chartyr.maibot-llm2pic')}",
+                prompt=prompt,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        )
+        return result.to_capability_payload()
 
     async def _ctx_extract_image_from_recent(self, stream_id: str) -> Optional[str]:
         """从最近的聊天消息中提取图片（用于 edit 模式）。
@@ -287,11 +360,11 @@ class _RuntimeBridgeMixin:
         custom_system_prompt: str = "",
     ) -> PromptGenerationResult:
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
-            target_model = await self._ctx_get_llm_model_name()
+            llm_target = await self._ctx_resolve_llm_target()
             return await generate_danbooru_prompt(
                 config=self.get_plugin_config_data(),
-                llm=self.ctx.llm,
-                model=target_model,
+                llm=_FallbackLLMProxy(self, llm_target),
+                model=llm_target.task_name,
                 user_request=user_request,
                 chat_messages=chat_messages,
                 persona=persona,
@@ -324,11 +397,11 @@ class _RuntimeBridgeMixin:
 请根据以上信息，生成适合的图片提示词和风格判断。必须以 JSON 格式输出。"""
 
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
-        target_model = await self._ctx_get_llm_model_name()
+        llm_target = await self._ctx_resolve_llm_target()
         try:
-            result = await self.ctx.llm.generate(
+            result = await _FallbackLLMProxy(self, llm_target).generate(
                 prompt=full_prompt,
-                model=target_model,
+                model=llm_target.task_name,
                 temperature=0.7,
             )
         except Exception as exc:
