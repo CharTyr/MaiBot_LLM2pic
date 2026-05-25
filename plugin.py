@@ -738,6 +738,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                     llm_style=prompt_result.style,
                     global_prompt=prompt_result.global_prompt,
                     characters=prompt_result.characters,
+                    aspect=prompt_result.aspect,
                     selfie_mode_bool=selfie_mode_bool,
                     input_image_base64=None,
                     proxy=proxy,
@@ -762,6 +763,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         llm_style: Optional[str],
         global_prompt: Optional[str],
         characters: Optional[list[dict[str, Any]]],
+        aspect: Optional[str],
         selfie_mode_bool: bool,
         input_image_base64: Optional[str],
         proxy: _ToolRuntimeProxy,
@@ -775,6 +777,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 llm_style=llm_style,
                 global_prompt=global_prompt,
                 characters=characters,
+                aspect=aspect,
                 selfie_mode_bool=selfie_mode_bool,
                 input_image_base64=input_image_base64,
                 proxy=proxy,
@@ -797,6 +800,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         llm_style: Optional[str],
         global_prompt: Optional[str],
         characters: Optional[list[dict[str, Any]]],
+        aspect: Optional[str],
         selfie_mode_bool: bool,
         input_image_base64: Optional[str],
         proxy: _ToolRuntimeProxy,
@@ -812,6 +816,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 llm_style=llm_style,
                 global_prompt=global_prompt,
                 characters=characters,
+                aspect=aspect,
                 input_image_base64=input_image_base64,
             ),
             failure_prefix="画图失败了",
@@ -1047,6 +1052,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
             input_image_base64 = await proxy._extract_input_image()
             characters = None
             global_prompt = None
+            aspect = None
             if input_image_base64:
                 generated_prompt = raw_prompt
             else:
@@ -1064,6 +1070,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 generated_prompt = prompt_result.prompt
                 global_prompt = prompt_result.global_prompt
                 characters = prompt_result.characters
+                aspect = prompt_result.aspect
             await self._run_generation_and_send(
                 plugin_config=plugin_config,
                 stream_id=stream_id,
@@ -1074,6 +1081,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     input_image_base64=input_image_base64,
                     global_prompt=global_prompt,
                     characters=characters,
+                    aspect=aspect,
                 ),
                 failure_prefix="/pic 失败了",
             )

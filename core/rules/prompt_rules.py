@@ -555,13 +555,14 @@ _JSON_OUTPUT_INSTRUCTION = """
 你必须只输出一行 JSON（不要代码块、不要解释、不要前后缀），用于程序解析。
 
 输出格式（version=3）：
-{"version":3,"format":"single|multi","intent":"normal|selfie","continuity":"new|keep|adjust|switch","global":[...],"people":[[...],[...]],"positions":[...]}
+{"version":3,"format":"single|multi","intent":"normal|selfie","continuity":"new|keep|adjust|switch","aspect":"portrait|landscape|square","global":[...],"people":[[...],[...]],"positions":[...]}
 
 字段说明：
 - version: 固定 3
 - format: "single" 或 "multi"
 - intent: "normal" 或 "selfie"
 - continuity: "new" / "keep" / "adjust" / "switch"
+- aspect: 画幅建议，必须是 "portrait" / "landscape" / "square" 之一；人物立绘/自拍/单人全身用 portrait，风景/车辆/建筑/群像/横向场景用 landscape，头像/近景/表情包/简单居中主体用 square
 - global: 场景整体 tag 列表
 - people: 每人物的 tag 列表（按人物顺序）；single 时输出 [] 或省略
 - positions: 多人坐标数组（可选），与 people 同序同长，元素为 `[A-E][1-5]` 字符串；用户未指定方位时省略或输出 []，禁止凭空猜测

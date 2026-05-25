@@ -71,6 +71,7 @@ class ImageGenerationRequest:
     apply_prompt_add: bool = True
     global_prompt: Optional[str] = None
     characters: Optional[list[dict[str, Any]]] = None
+    aspect: Optional[str] = None
 
 
 @dataclass
@@ -178,6 +179,11 @@ def _build_api_params(client: ImageClientProtocol, model_config: Optional[dict])
     )
 
 
+def _normalize_aspect(aspect: Optional[str]) -> Optional[str]:
+    normalized = str(aspect or "").strip().lower()
+    return normalized if normalized in {"portrait", "landscape", "square"} else None
+
+
 async def generate_image(
     *,
     plugin_config: dict[str, Any],
@@ -243,13 +249,17 @@ async def generate_image(
                     if request.apply_prompt_add
                     else request.global_prompt
                 )
+            newapi_params = dict(params.newapi_nai_params or {})
+            aspect = _normalize_aspect(request.aspect)
+            if aspect:
+                newapi_params["size"] = aspect
             success, result = await asyncio.to_thread(
                 client._make_newapi_nai_request,
                 prompt=newapi_prompt,
                 base_url=params.base_url,
                 api_key=params.api_key,
                 model=params.model,
-                params=params.newapi_nai_params,
+                params=newapi_params,
                 characters=request.characters,
             )
         elif api_type == "regex_url":

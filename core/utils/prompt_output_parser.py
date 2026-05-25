@@ -26,6 +26,21 @@ _POSITION_GRID_RE = re.compile(r"^[A-E][1-5]$")
 # 拍平多人字符串的 charN: 前缀（兼容大小写、中英文冒号、可选空格）
 _CHAR_PREFIX_RE = re.compile(r"^char\s*\d+\s*[:：]\s*", re.IGNORECASE)
 
+_ASPECT_ALIASES = {
+    "portrait": "portrait",
+    "vertical": "portrait",
+    "tall": "portrait",
+    "9:16": "portrait",
+    "2:3": "portrait",
+    "landscape": "landscape",
+    "horizontal": "landscape",
+    "wide": "landscape",
+    "16:9": "landscape",
+    "3:2": "landscape",
+    "square": "square",
+    "1:1": "square",
+}
+
 
 def _strip_code_fence(text: str) -> str:
     """去掉可能的 ```lang ... ``` 包裹（只做轻量处理）。"""
@@ -162,6 +177,23 @@ def parse_prompt_from_structured_output(text: str) -> Optional[str]:
         return normalized
 
     return None
+
+
+def normalize_aspect(value: object) -> Optional[str]:
+    """把 LLM 输出的画幅值规整到 portrait/landscape/square。"""
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    normalized = normalized.replace("_", "-")
+    return _ASPECT_ALIASES.get(normalized)
+
+
+def extract_aspect_from_structured_output(text: str) -> Optional[str]:
+    """从结构化 JSON 输出中提取画幅建议。"""
+    obj = parse_structured_prompt_payload(text)
+    if not obj:
+        return None
+    return normalize_aspect(obj.get("aspect") or obj.get("size") or obj.get("orientation"))
 
 
 def extract_multi_character_payload(text: str) -> Optional[Dict[str, Any]]:

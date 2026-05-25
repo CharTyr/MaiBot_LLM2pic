@@ -11,7 +11,11 @@ from src.common.logger import get_logger
 
 from .core.rules.prompt_rules import PROMPT_GENERATOR_JSON_TEMPLATE, SFW_PROMPT_GENERATOR_JSON_TEMPLATE
 from .core.services.tag_candidate_resolver import resolve_tag_candidates
-from .core.utils.prompt_output_parser import parse_prompt_from_structured_output, resolve_multi_character_payload
+from .core.utils.prompt_output_parser import (
+    extract_aspect_from_structured_output,
+    parse_prompt_from_structured_output,
+    resolve_multi_character_payload,
+)
 from .core.utils.prompt_postprocessor import (
     normalize_characters_order,
     normalize_prompt_order,
@@ -35,6 +39,7 @@ class PromptGenerationResult:
     style: Optional[str] = None
     global_prompt: Optional[str] = None
     characters: Optional[list[dict[str, Any]]] = None
+    aspect: Optional[str] = None
     error: str = ""
 
 
@@ -156,6 +161,47 @@ def _postprocess_multi_character_payload(
     }
 
 
+def _infer_aspect_from_text(
+    prompt: str,
+    *,
+    user_request: str,
+    selfie_mode: bool,
+    has_characters: bool,
+) -> str:
+    """LLM 未给出画幅时按题材做保守兜底。"""
+    text = f"{user_request} {prompt}".lower()
+    if any(token in text for token in ("close-up", "face focus", "icon", "sticker", "表情包", "头像", "近景")):
+        return "square"
+    if selfie_mode or any(token in text for token in ("selfie", "portrait", "半身", "全身", "立绘")):
+        return "portrait"
+    if has_characters or any(
+        token in text
+        for token in (
+            "2girls",
+            "3girls",
+            "1boy 1girl",
+            "multiple",
+            "group",
+            "scenery",
+            "landscape",
+            "wide shot",
+            "panorama",
+            "car",
+            "vehicle",
+            "building",
+            "cityscape",
+            "风景",
+            "横图",
+            "群像",
+            "多人",
+            "车辆",
+            "建筑",
+        )
+    ):
+        return "landscape"
+    return "portrait"
+
+
 async def generate_danbooru_prompt(
     *,
     config: dict[str, Any],
@@ -209,6 +255,12 @@ async def generate_danbooru_prompt(
         return PromptGenerationResult(False, error="LLM返回空提示词")
 
     multi_payload = resolve_multi_character_payload(response_text, generated_prompt)
+    aspect = extract_aspect_from_structured_output(response_text) or _infer_aspect_from_text(
+        generated_prompt,
+        user_request=user_request,
+        selfie_mode=selfie_mode,
+        has_characters=bool(multi_payload),
+    )
     selfie_appearance_policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
     enforce_tag_order = _bool_config(config, "llm.enforce_tag_order", True)
     self_character_requested = user_requests_self_character(user_request)
@@ -239,7 +291,7 @@ async def generate_danbooru_prompt(
         sfw_mode,
         nsfw_allowed,
         selfie_mode,
-        generated_prompt[:500],
+        f"aspect={aspect or '-'} {generated_prompt[:500]}",
     )
 
     return PromptGenerationResult(
@@ -248,4 +300,5 @@ async def generate_danbooru_prompt(
         style="anime",
         global_prompt=str(multi_payload.get("global_text") or "").strip() if multi_payload else None,
         characters=multi_payload.get("characters") if multi_payload else None,
+        aspect=aspect,
     )
