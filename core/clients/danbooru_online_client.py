@@ -21,6 +21,42 @@ _DEFAULT_BASE_URL = "https://sakizuki-danboorusearch.hf.space/api"
 _DEFAULT_TIMEOUT = 90.0
 
 
+
+
+def _normalize_tag_item_list(payload: Any) -> List[Dict[str, Any]]:
+    """将 API 响应归一化为 tag 字典列表。"""
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        for key in ("results", "related", "data", "items", "tags"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+        else:
+            logger.warning(
+                "DanbooruOnline 响应无法解析为列表，keys=%s",
+                list(payload.keys())[:12],
+            )
+            return []
+    else:
+        logger.warning(
+            "DanbooruOnline 响应类型异常: %s",
+            type(payload).__name__,
+        )
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            normalized.append(item)
+            continue
+        if isinstance(item, str) and item.strip():
+            normalized.append({"tag": item.strip()})
+    return normalized
+
 class DanbooruOnlineClient:
     """DanbooruSearchOnline API 异步客户端"""
 
@@ -103,7 +139,11 @@ class DanbooruOnlineClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(f"{self.base_url}/search", json=payload)
                 resp.raise_for_status()
-                return resp.json()
+                data = resp.json()
+                if isinstance(data, dict) and isinstance(data.get("results"), list):
+                    data = dict(data)
+                    data["results"] = _normalize_tag_item_list(data["results"])
+                return data
         except httpx.TimeoutException:
             logger.warning(f"DanbooruOnline search 超时 (>{self.timeout}s)，query='{query[:30]}'")
             self._available = False
@@ -143,7 +183,7 @@ class DanbooruOnlineClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(f"{self.base_url}/related", json=payload)
                 resp.raise_for_status()
-                return resp.json()
+                return _normalize_tag_item_list(resp.json())
         except httpx.TimeoutException:
             logger.warning(f"DanbooruOnline related 超时 (>{self.timeout}s)")
             return None

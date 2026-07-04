@@ -15,6 +15,30 @@ from ..clients.danbooru_online_client import DanbooruOnlineClient
 logger = get_logger("MaiBot_LLM2pic")
 
 
+
+
+def _coerce_tag_record(item: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(item, dict):
+        tag = str(item.get("tag") or item.get("name") or "").strip()
+        if not tag:
+            return None
+        return {
+            "tag": tag,
+            "cn_name": str(item.get("cn_name") or item.get("cn") or "").strip(),
+            "score": float(item.get("final_score", item.get("score", 0.0)) or 0.0),
+            "cooc_score": float(item.get("cooc_score", 0.0) or 0.0),
+            "category": str(item.get("category", "General") or "General"),
+        }
+    if isinstance(item, str) and item.strip():
+        return {
+            "tag": item.strip(),
+            "cn_name": "",
+            "score": 0.0,
+            "cooc_score": 0.0,
+            "category": "General",
+        }
+    return None
+
 class DanbooruOnlineRetriever:
     """基于 DanbooruSearchOnline API 的在线标签检索器"""
 
@@ -96,15 +120,19 @@ class DanbooruOnlineRetriever:
             logger.warning(f"DanbooruOnline search 无结果，query='{query[:30]}'")
             return empty_result
 
-        search_results = [
-            {
-                "tag": item["tag"],
-                "cn_name": item.get("cn_name", ""),
-                "score": item.get("final_score", 0.0),
-                "category": item.get("category", "General"),
-            }
-            for item in search_resp["results"]
-        ]
+        search_results = []
+        for raw_item in search_resp.get("results") or []:
+            record = _coerce_tag_record(raw_item)
+            if not record:
+                continue
+            search_results.append(
+                {
+                    "tag": record["tag"],
+                    "cn_name": record["cn_name"],
+                    "score": record["score"],
+                    "category": record["category"],
+                }
+            )
 
         # 第二步：取 top-N 标签作为种子，获取共现推荐
         seed_tags = [r["tag"] for r in search_results[:self.related_seed_count]]
@@ -119,16 +147,19 @@ class DanbooruOnlineRetriever:
             if related_resp:
                 # 去重：排除已在 search 结果中的标签
                 search_tag_set = {r["tag"] for r in search_results}
-                related_results = [
-                    {
-                        "tag": item["tag"],
-                        "cn_name": item.get("cn_name", ""),
-                        "cooc_score": item.get("cooc_score", 0.0),
-                        "category": item.get("category", "General"),
-                    }
-                    for item in related_resp
-                    if item["tag"] not in search_tag_set
-                ]
+                related_results = []
+                for raw_item in related_resp or []:
+                    record = _coerce_tag_record(raw_item)
+                    if not record or record["tag"] in search_tag_set:
+                        continue
+                    related_results.append(
+                        {
+                            "tag": record["tag"],
+                            "cn_name": record["cn_name"],
+                            "cooc_score": record["cooc_score"],
+                            "category": record["category"],
+                        }
+                    )
 
         logger.info(
             f"DanbooruOnline 检索完成：query='{query[:30]}' → "

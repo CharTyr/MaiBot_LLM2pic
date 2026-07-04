@@ -32,6 +32,26 @@ _NEWAPI_NAI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _NEWAPI_NAI_SEEDS_PATTERN = re.compile(r"<!--\s*seeds:\s*(\[[^\]]*])\s*-->")
 _NEWAPI_NAI_POSITION_GRID_RE = re.compile(r"^[A-E][1-5]$")
 _NEWAPI_NAI_MULTI_CHARACTER_MODEL_KEYWORDS = ("nai-diffusion-4",)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
+
+
+def _strip_cjk_from_prompt_segment(segment: str) -> str:
+    if not segment or not segment.strip():
+        return segment
+    stripped = _CJK_RE.sub("", segment)
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;")
+    return stripped
+
+
+def _sanitize_prompt_for_newapi(prompt: str) -> str:
+    if not prompt or not _CJK_RE.search(prompt):
+        return prompt
+    parts = [p.strip() for p in prompt.split(",")]
+    cleaned = [_strip_cjk_from_prompt_segment(p) for p in parts]
+    cleaned = [p for p in cleaned if p]
+    result = ", ".join(cleaned)
+    result = re.sub(r",\s*,+", ", ", result).strip(" ,")
+    return result or prompt
 
 
 class ImageClientMixin:
@@ -106,7 +126,13 @@ class ImageClientMixin:
             custom_prompt_add = str(self.get_config("generation.custom_prompt_add", "") or "")
 
         parts = [part.strip().strip(",") for part in (custom_prompt_add, generated_prompt) if part and part.strip()]
-        return self._remove_duplicate_keywords(", ".join(parts))
+        merged = self._remove_duplicate_keywords(", ".join(parts))
+        sanitized = _sanitize_prompt_for_newapi(merged)
+        if sanitized != merged:
+            logger.warning(
+                f"{self.log_prefix} 已从最终 prompt 移除 CJK 片段（NewAPI 禁止中文）: before_len={len(merged)} after_len={len(sanitized)}"
+            )
+        return sanitized
 
     @staticmethod
     def _remove_duplicate_keywords(prompt: str) -> str:
@@ -516,13 +542,22 @@ class ImageClientMixin:
 
         normalized_size = str(size or "").strip().lower()
         if not normalized_size:
-            return "portrait"
-        if normalized_size in {"portrait", "landscape", "square"}:
-            return normalized_size
-        if normalized_size in {"832x1216", "1216x832", "1024x1024"}:
-            width, height = normalized_size.split("x", 1)
-            return [int(width), int(height)]
-        return normalized_size
+            return [832, 1216]
+        # 语义画幅映射到 NAI 分辨率
+        size_map = {
+            "portrait": [832, 1216],
+            "landscape": [1216, 832],
+            "square": [1024, 1024],
+        }
+        if normalized_size in size_map:
+            return size_map[normalized_size]
+        if "x" in normalized_size:
+            parts = normalized_size.split("x", 1)
+            try:
+                return [int(parts[0]), int(parts[1])]
+            except (ValueError, IndexError):
+                pass
+        return [832, 1216]
 
     @staticmethod
     def _extract_data_uri_image(content: str) -> Optional[str]:

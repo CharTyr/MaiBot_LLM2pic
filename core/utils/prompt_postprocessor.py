@@ -314,6 +314,8 @@ def user_requests_self_character(user_request: str) -> bool:
             "東雪蓮",
             "冬雪莲",
             "冬雪蓮",
+            "雪莲",
+            "雪蓮",
             "莲莲",
             "蓮蓮",
             "azuma seren",

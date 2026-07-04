@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 import time
 
-from .danbooru_generator import PromptGenerationResult, generate_danbooru_prompt
+from .danbooru_generator import (
+    PromptGenerationResult,
+    generate_danbooru_prompt,
+    _validate_prompt_llm_response,
+    _cleanup_llm_prompt,
+)
 from .utils import download_image_to_base64, _peel_envelope
 from .style_router import LLMOutputParser, DEFAULT_SYSTEM_PROMPT
 from .actions import DrawPictureToolMetadata
@@ -24,6 +29,18 @@ class _LLMTarget:
     task_name: str = "planner"
     model_name: Optional[str] = None
 
+
+
+
+def _llm_response_usable_for_prompt(result: Any) -> bool:
+    if not isinstance(result, dict) or not bool(result.get("success", False)):
+        return False
+    response_text = str(result.get("response") or "").strip()
+    if not response_text:
+        return False
+    cleaned = _cleanup_llm_prompt(response_text)
+    ok, _ = _validate_prompt_llm_response(response_text, cleaned)
+    return ok
 
 class _FallbackLLMProxy:
     """优先直连指定具体模型，失败后回退任务组。"""
@@ -45,7 +62,7 @@ class _FallbackLLMProxy:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                if isinstance(result, dict) and bool(result.get("success", False)) and str(result.get("response") or "").strip():
+                if _llm_response_usable_for_prompt(result):
                     return result
                 logger.warning(
                     "[LLM2picBridge] 指定模型 %s 生成失败，将回退任务 %s: %s",
