@@ -51,7 +51,7 @@ def _sanitize_prompt_for_newapi(prompt: str) -> str:
     cleaned = [p for p in cleaned if p]
     result = ", ".join(cleaned)
     result = re.sub(r",\s*,+", ", ", result).strip(" ,")
-    return result or prompt
+    return result
 
 
 class ImageClientMixin:
@@ -746,7 +746,13 @@ class ImageClientMixin:
         }
         negative_prompt = str(options.get("negative_prompt", "") or "").strip()
         if negative_prompt:
-            draw_payload["negative_prompt"] = negative_prompt
+            sanitized_neg = _sanitize_prompt_for_newapi(negative_prompt)
+            if sanitized_neg:
+                draw_payload["negative_prompt"] = sanitized_neg
+            elif negative_prompt != sanitized_neg:
+                logger.warning(
+                    f"{self.log_prefix} negative_prompt 含 CJK，sanitize 后为空，已丢弃"
+                )
         seed = options.get("seed", None)
         if seed not in (None, "", -1):
             draw_payload["seed"] = int(seed)
