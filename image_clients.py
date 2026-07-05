@@ -32,7 +32,7 @@ _NEWAPI_NAI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _NEWAPI_NAI_SEEDS_PATTERN = re.compile(r"<!--\s*seeds:\s*(\[[^\]]*])\s*-->")
 _NEWAPI_NAI_POSITION_GRID_RE = re.compile(r"^[A-E][1-5]$")
 _NEWAPI_NAI_MULTI_CHARACTER_MODEL_KEYWORDS = ("nai-diffusion-4",)
-_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef\u2e80-\u2eff\uac00-\ud7af\u3040-\u30ff\uf900-\ufaff]+")
 
 
 def _strip_cjk_from_prompt_segment(segment: str) -> str:
