@@ -24,6 +24,7 @@ from .actions import DrawPictureToolMetadata
 from .commands import DirectPicCommand
 from .bridge import _RuntimeBridgeMixin, _ToolRuntimeProxy, _CommandRuntimeProxy
 from .generation_service import ImageGenerationRequest, generate_image
+from .wd14_client import reverse_tag_image, DEFAULT_ENDPOINT as WD14_DEFAULT_ENDPOINT
 
 logger = get_logger("MaiBot_LLM2pic")
 
@@ -224,6 +225,20 @@ class TagRetrieverConfig(PluginConfigBase):
     min_score: float = Field(default=0.3, ge=0.0, le=1.0, description="本地检索最低相似度")
 
 
+class Wd14Config(PluginConfigBase):
+    """WD14 反推配置。"""
+
+    __ui_label__ = "WD14 反推"
+    __ui_icon__ = "scan-image"
+    __ui_order__ = 7
+
+    enabled: bool = Field(default=True, description="是否启用引用图片 WD14 反推")
+    endpoint: str = Field(default=WD14_DEFAULT_ENDPOINT, description="WD14 tagger endpoint URL")
+    threshold: float = Field(default=0.35, ge=0.0, le=1.0, description="tag 置信度阈值")
+    timeout: float = Field(default=60.0, ge=5.0, le=300.0, description="反推请求超时时间（秒）")
+    max_image_size: int = Field(default=1024, ge=128, le=4096, description="反推前缩放图片最大边长，避免超大图超时")
+
+
 class ComponentsConfig(PluginConfigBase):
     """组件启用配置。"""
 
@@ -245,6 +260,7 @@ class LLM2PicPluginConfig(PluginConfigBase):
     edit: EditConfig = Field(default_factory=EditConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     tag_retriever: TagRetrieverConfig = Field(default_factory=TagRetrieverConfig)
+    wd14: Wd14Config = Field(default_factory=Wd14Config)
     components: ComponentsConfig = Field(default_factory=ComponentsConfig)
 
 
@@ -734,6 +750,34 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             persona = await proxy._get_persona()
             custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
 
+            # WD14 反推：检测引用图片或消息自带图片，提取 Danbooru tag
+            reference_tags = ""
+            wd14_config = plugin_config.get("wd14", {})
+            if _normalize_bool(wd14_config.get("enabled", True)):
+                try:
+                    input_image = await self._ctx_extract_image_from_recent(stream_id)
+                    if input_image:
+                        logger.info("[DrawPicture] 检测到引用/附带图片，开始 WD14 反推")
+                        endpoint = str(wd14_config.get("endpoint", WD14_DEFAULT_ENDPOINT) or WD14_DEFAULT_ENDPOINT)
+                        threshold = float(wd14_config.get("threshold", 0.35) or 0.35)
+                        timeout = float(wd14_config.get("timeout", 60.0) or 60.0)
+                        wd14_result = await reverse_tag_image(
+                            input_image,
+                            endpoint=endpoint,
+                            threshold=threshold,
+                            timeout=timeout,
+                        )
+                        if wd14_result and wd14_result.success:
+                            reference_tags = wd14_result.prompt
+                            logger.info("[DrawPicture] WD14 反推成功: %s...", reference_tags[:120])
+                            await self._ctx_send_text("已从参考图反推 tag，正在融合生成...", stream_id)
+                        else:
+                            logger.warning("[DrawPicture] WD14 反推失败或无结果")
+                    else:
+                        logger.debug("[DrawPicture] 未检测到引用/附带图片，跳过 WD14 反推")
+                except Exception as exc:
+                    logger.warning("[DrawPicture] WD14 反推异常: %s", exc, exc_info=True)
+
             prompt_result = await proxy._generate_prompt_with_style(
                 user_request=original_description or "根据聊天内容生成一张合适的图片",
                 chat_messages=chat_messages_str,
@@ -741,6 +785,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 selfie_mode=selfie_mode_bool,
                 nsfw_allowed=nsfw_allowed_bool,
                 custom_system_prompt=custom_system_prompt,
+                reference_tags=reference_tags,
             )
             if not prompt_result.success:
                 return {"success": False, "error": f"提示词生成失败: {prompt_result.error}"}

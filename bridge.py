@@ -375,6 +375,7 @@ class _RuntimeBridgeMixin:
         selfie_mode: bool,
         nsfw_allowed: bool = False,
         custom_system_prompt: str = "",
+        reference_tags: str = "",
     ) -> PromptGenerationResult:
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
             llm_target = await self._ctx_resolve_llm_target()
@@ -388,6 +389,7 @@ class _RuntimeBridgeMixin:
                 selfie_mode=selfie_mode,
                 nsfw_allowed=nsfw_allowed,
                 custom_system_prompt=custom_system_prompt,
+                reference_tags=reference_tags,
             )
 
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
@@ -492,6 +494,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         selfie_mode: bool,
         nsfw_allowed: bool,
         custom_system_prompt: str,
+        reference_tags: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -500,6 +503,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
             selfie_mode=selfie_mode,
             nsfw_allowed=nsfw_allowed,
             custom_system_prompt=custom_system_prompt,
+            reference_tags=reference_tags,
         )
 
 
@@ -542,6 +546,7 @@ class _CommandRuntimeProxy(DirectPicCommand):
         selfie_mode: bool,
         nsfw_allowed: bool,
         custom_system_prompt: str,
+        reference_tags: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -550,4 +555,5 @@ class _CommandRuntimeProxy(DirectPicCommand):
             selfie_mode=selfie_mode,
             nsfw_allowed=nsfw_allowed,
             custom_system_prompt=custom_system_prompt,
+            reference_tags=reference_tags,
         )

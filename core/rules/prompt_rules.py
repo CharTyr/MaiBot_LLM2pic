@@ -591,10 +591,37 @@ JSON 元素结构规则：
 
 # ==================== 4 个最终模板 ====================
 
+_REFERENCE_TAGS_USAGE = """
+<reference_tags_usage>
+## 参考图片反推 tag 的使用（重要）
+
+系统通过 WD14 tagger 对用户发送/引用的图片进行了反推，提取出 Danbooru tag。
+这些 tag 代表了参考图的实际画面内容（人物外貌、服装、姿势、场景等）。
+
+**使用原则：**
+- 反推 tag 是参考图的真实视觉特征，可信度高于你自行猜测
+- 用户文字请求永远优先于反推 tag — 用户要改的，以用户文字为准
+- 反推 tag 中与用户请求冲突的部分，以用户请求为准（如用户要换发色，就忽略反推的发色）
+- 反推 tag 中不与用户请求冲突的部分，应尽量保留（如服装款式、姿势、场景细节）
+- 不要照搬全部反推 tag — 挑选与用户意图相关的，过滤掉无关的或矛盾的
+- 反推 tag 中的质量词、画师 tag 由系统配置管理，你不需要输出这些
+- 如果反推 tag 包含 character/series 信息，且用户没有要求改变角色，保留角色 tag
+
+**融合策略：**
+1. 从反推 tag 中提取：人物外貌特征、服装、配饰、姿势、场景元素
+2. 与用户文字请求合并：用户明确指定的 > 反推 tag > 你自行补充
+3. 用户文字里没有提到的细节（如背景、光影），优先从反推 tag 中取
+4. 用户文字里明确要求改变的（如"换成红发"），覆盖反推 tag 对应项
+5. 最终输出必须是完整的 Danbooru tag 串，不能只输出增量
+</reference_tags_usage>
+""".strip()
+
+
 SFW_PROMPT_GENERATOR_TEMPLATE = f"""
 {SFW_PROMPT_RULES_TEXT}
 
 <<TAG_CANDIDATES>>
+<<REFERENCE_TAGS>>
 <<PREVIOUS_PROMPT>>
 <<REPLY_CONTEXT>>
 <<REASONING_CONTEXT>>
@@ -613,6 +640,7 @@ SFW_PROMPT_GENERATOR_JSON_TEMPLATE = f"""
 {SFW_PROMPT_RULES_TEXT}
 
 <<TAG_CANDIDATES>>
+<<REFERENCE_TAGS>>
 <<PREVIOUS_PROMPT>>
 <<REPLY_CONTEXT>>
 <<REASONING_CONTEXT>>
@@ -631,6 +659,7 @@ PROMPT_GENERATOR_TEMPLATE = f"""
 {PROMPT_RULES_TEXT}
 
 <<TAG_CANDIDATES>>
+<<REFERENCE_TAGS>>
 <<PREVIOUS_PROMPT>>
 <<REPLY_CONTEXT>>
 <<REASONING_CONTEXT>>
@@ -649,6 +678,7 @@ PROMPT_GENERATOR_JSON_TEMPLATE = f"""
 {PROMPT_RULES_TEXT}
 
 <<TAG_CANDIDATES>>
+<<REFERENCE_TAGS>>
 <<PREVIOUS_PROMPT>>
 <<REPLY_CONTEXT>>
 <<REASONING_CONTEXT>>

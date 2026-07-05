@@ -167,6 +167,7 @@ def _render_generator_prompt(
     selfie_mode: bool,
     custom_system_prompt: str,
     tag_candidates: str,
+    reference_tags: str = "",
 ) -> str:
     custom_block = custom_system_prompt.strip()
     if custom_block:
@@ -185,6 +186,8 @@ def _render_generator_prompt(
 """
     prompt = template.replace("<<CUSTOM_SYSTEM_PROMPT>>", custom_block).strip()
     prompt = prompt.replace("<<TAG_CANDIDATES>>", tag_candidates).strip()
+    ref_block = reference_tags.strip() if reference_tags else ""
+    prompt = prompt.replace("<<REFERENCE_TAGS>>", ref_block).strip()
     prompt = prompt.replace("<<PREVIOUS_PROMPT>>", "").strip()
     prompt = prompt.replace("<<REPLY_CONTEXT>>", "").strip()
     prompt = prompt.replace("<<REASONING_CONTEXT>>", "").strip()
@@ -294,6 +297,7 @@ async def generate_danbooru_prompt(
     selfie_mode: bool,
     nsfw_allowed: bool,
     custom_system_prompt: str = "",
+    reference_tags: str = "",
 ) -> PromptGenerationResult:
     """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
@@ -313,6 +317,7 @@ async def generate_danbooru_prompt(
         selfie_mode=selfie_mode,
         custom_system_prompt=custom_system_prompt,
         tag_candidates=tag_candidates,
+        reference_tags=reference_tags,
     )
 
     max_attempts = max(1, min(int(llm_config.get("prompt_retry_attempts", 3) or 3), 5))
