@@ -647,8 +647,8 @@ class ImageClientMixin:
                 continue
             raw_position = str(item.get("position") or "").strip().upper()
             entry = {
-                "prompt": char_prompt,
-                "negative_prompt": str(item.get("negative_prompt") or "").strip(),
+                "prompt": _sanitize_prompt_for_newapi(char_prompt),
+                "negative_prompt": _sanitize_prompt_for_newapi(str(item.get("negative_prompt") or "").strip()),
                 "position": raw_position if _NEWAPI_NAI_POSITION_GRID_RE.match(raw_position) else "",
             }
             cleaned.append(entry)
@@ -736,7 +736,7 @@ class ImageClientMixin:
         options = params or {}
         draw_payload: dict[str, object] = {
             "model": model,
-            "prompt": prompt,
+            "prompt": _sanitize_prompt_for_newapi(prompt),
             "size": self._parse_size_to_newapi_nai_size(options.get("size", "portrait")),
             "steps": min(max(int(options.get("steps", 23) or 23), 1), 28),
             "scale": options.get("scale", 5),
