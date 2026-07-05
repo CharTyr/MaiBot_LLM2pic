@@ -339,6 +339,7 @@ async def generate_danbooru_prompt(
             }
             if reference_image_base64:
                 generate_kwargs["image_base64"] = reference_image_base64
+                generate_kwargs["chat_messages"] = chat_messages
             result = await llm.generate(**generate_kwargs)
         except Exception as exc:
             last_error = str(exc)

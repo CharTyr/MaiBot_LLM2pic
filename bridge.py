@@ -85,8 +85,22 @@ class _FallbackLLMProxy:
 
         fallback_kwargs = dict(kwargs)
         fallback_kwargs["model"] = self._target.task_name
-        # ctx.llm.generate 不支持 image_base64，传图只在 direct model 路径有效
-        fallback_kwargs.pop("image_base64", None)
+        had_image = bool(fallback_kwargs.pop("image_base64", None) or image_base64)
+        chat_messages = fallback_kwargs.pop("chat_messages", None)
+        prompt = fallback_kwargs.get("prompt")
+        if (
+            had_image
+            and isinstance(prompt, str)
+            and "## VLM 识图结果" not in prompt
+            and chat_messages
+        ):
+            vlm_desc = _RuntimeBridgeMixin._extract_vlm_image_description(str(chat_messages))
+            if vlm_desc:
+                vlm_block = (
+                    "\n\n## VLM 识图结果（指定模型回退，无法直接看图，由 VLM 补充）\n"
+                    f"{vlm_desc}"
+                )
+                fallback_kwargs["prompt"] = f"{prompt}{vlm_block}"
         return await self._runtime.ctx.llm.generate(**fallback_kwargs)
 
 

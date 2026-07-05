@@ -221,6 +221,53 @@ def _resize_image_for_edit(image_base64: str, max_pixels: int = 4_000_000) -> st
         return image_base64
 
 
+def _resize_image_for_wd14(image_base64: str, max_edge: int = 1024) -> str:
+    """WD14 反推前缩图：最长边不超过 max_edge，减小 Modal 请求体积与耗时。"""
+    try:
+        max_edge = max(256, min(int(max_edge or 1024), 4096))
+    except (TypeError, ValueError):
+        max_edge = 1024
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageFile
+
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+        image_bytes = base64.b64decode(image_base64)
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_edge:
+            scale = max_edge / float(longest)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            logger.info(
+                "[LLM2pic] WD14 缩图: %sx%s -> %sx%s (max_edge=%s)",
+                w,
+                h,
+                new_w,
+                new_h,
+                max_edge,
+            )
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        result = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return result
+    except ImportError:
+        logger.warning("[LLM2pic] Pillow 未安装，WD14 缩图跳过")
+        return image_base64
+    except Exception as exc:
+        logger.warning("[LLM2pic] WD14 缩图失败: %s", exc)
+        return image_base64
+
+
 def _peel_envelope(payload: Any) -> Any:
     """剥离 SDK/Runner 常见的 result/data 包装层。"""
     current = payload

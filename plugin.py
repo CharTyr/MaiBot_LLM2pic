@@ -18,7 +18,7 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from src.common.logger import get_logger
 
-from .utils import _normalize_bool, _resize_image_for_edit
+from .utils import _normalize_bool, _resize_image_for_edit, _resize_image_for_wd14
 from .style_router import StyleRouter
 from .actions import DrawPictureToolMetadata
 from .commands import DirectPicCommand
@@ -742,7 +742,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
 
         task_started = False
         try:
-            # 先生成 prompt（快速，在 RPC 超时内完成）
+            # 只做轻量检查（guard + 参数校验），快速返回
             proxy = _ToolRuntimeProxy(
                 self,
                 plugin_config=plugin_config,
@@ -756,7 +756,6 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 session_message=kwargs.get("message"),
             )
 
-            # 获取聊天记录、生成提示词（都在30秒内）
             original_description = str(proxy.tool_args.get("description", "") or "").strip()
             selfie_mode_bool = _normalize_bool(proxy.tool_args.get("selfie_mode", False))
             nsfw_allowed_bool = _normalize_bool(proxy.tool_args.get("nsfw_allowed", False))
@@ -777,25 +776,67 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 logger.info("[DrawPicture] 出图保护拦截: category=%s error=%s", guard_category, guard_error)
                 return {"success": False, "error": guard_error}
 
+            self._mark_draw_guard_allowed(stream_id)
+
+            # WD14 反推 + LLM prompt 生成 + NAI 出图全部丢后台
+            asyncio.create_task(
+                self._background_draw_picture(
+                    plugin_config=plugin_config,
+                    stream_id=stream_id,
+                    proxy=proxy,
+                    original_description=original_description,
+                    chat_messages_str=chat_messages_str,
+                    selfie_mode_bool=selfie_mode_bool,
+                    nsfw_allowed_bool=nsfw_allowed_bool,
+                    use_reference_image=use_reference_image,
+                )
+            )
+            task_started = True
+        except Exception as exc:
+            logger.error("[DrawPicture] 启动生图任务失败: %s", exc, exc_info=True)
+            return {"success": False, "error": f"启动生图任务失败: {str(exc)[:80]}"}
+        finally:
+            if not task_started:
+                self._release_generation_lock(stream_id)
+        await self._ctx_send_text("正在生成图片，请稍等...", stream_id)
+        return {"success": True, "content": "已开始生成图片，完成后会直接发送。"}
+
+    async def _background_draw_picture(
+        self,
+        *,
+        plugin_config: dict[str, Any],
+        stream_id: str,
+        proxy: _ToolRuntimeProxy,
+        original_description: str,
+        chat_messages_str: str,
+        selfie_mode_bool: bool,
+        nsfw_allowed_bool: bool,
+        use_reference_image: bool,
+    ) -> None:
+        """后台异步完成 WD14 反推 + LLM prompt 生成 + NAI 出图。"""
+        delegated_to_generate = False
+        try:
             persona = await proxy._get_persona()
             custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
 
             # WD14 反推：由 planner 通过 use_reference_image 参数控制
             reference_tags = ""
             reference_image_base64 = ""
-            use_ref_image = _normalize_bool(proxy.tool_args.get("use_reference_image", False))
+            use_ref_image = _normalize_bool(use_reference_image)
             wd14_config = plugin_config.get("wd14", {})
             if use_ref_image and _normalize_bool(wd14_config.get("enabled", True)):
                 try:
                     input_image = await self._ctx_extract_image_from_recent(stream_id)
                     if input_image:
                         logger.info("[DrawPicture] use_reference_image=true，开始 WD14 反推")
-                        reference_image_base64 = input_image  # 保存图片传给视觉 LLM
+                        # 缩图避免大图超时
+                        max_size = int(wd14_config.get("max_image_size", 1024) or 1024)
+                        reference_image_base64 = _resize_image_for_wd14(input_image, max_size)
                         endpoint = str(wd14_config.get("endpoint", WD14_DEFAULT_ENDPOINT) or WD14_DEFAULT_ENDPOINT)
                         threshold = float(wd14_config.get("threshold", 0.35) or 0.35)
                         timeout = float(wd14_config.get("timeout", 60.0) or 60.0)
                         wd14_result = await reverse_tag_image(
-                            input_image,
+                            reference_image_base64,
                             endpoint=endpoint,
                             threshold=threshold,
                             timeout=timeout,
@@ -803,7 +844,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                         if wd14_result and wd14_result.success:
                             reference_tags = wd14_result.format_for_llm()
                             logger.info("[DrawPicture] WD14 反推成功: %s...", reference_tags[:120])
-                            await self._ctx_send_text("已从参考图反推 tag + 传图给视觉模型，正在融合生成...", stream_id)
+                            await self._ctx_send_text("已反推 tag + 传图给视觉模型，正在生成 prompt...", stream_id)
                         else:
                             logger.warning("[DrawPicture] WD14 反推失败或无结果，仍传图给视觉模型")
                             await self._ctx_send_text("反推失败，直接传图给视觉模型...", stream_id)
@@ -825,34 +866,33 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 reference_image_base64=reference_image_base64,
             )
             if not prompt_result.success:
-                return {"success": False, "error": f"提示词生成失败: {prompt_result.error}"}
+                await self._ctx_send_text(f"提示词生成失败: {prompt_result.error[:80]}", stream_id)
+                return
 
-            self._mark_draw_guard_allowed(stream_id)
+            await self._ctx_send_text("prompt 生成完成，正在出图...", stream_id)
 
-            # 快速返回，后台异步请求生图 API
-            asyncio.create_task(
-                self._background_generate_and_send(
-                    plugin_config=plugin_config,
-                    stream_id=stream_id,
-                    generated_prompt=prompt_result.prompt,
-                    llm_style=prompt_result.style,
-                    global_prompt=prompt_result.global_prompt,
-                    characters=prompt_result.characters,
-                    aspect=prompt_result.aspect,
-                    selfie_mode_bool=selfie_mode_bool,
-                    input_image_base64=None,
-                    proxy=proxy,
-                )
+            await self._background_generate_and_send(
+                plugin_config=plugin_config,
+                stream_id=stream_id,
+                generated_prompt=prompt_result.prompt,
+                llm_style=prompt_result.style,
+                global_prompt=prompt_result.global_prompt,
+                characters=prompt_result.characters,
+                aspect=prompt_result.aspect,
+                selfie_mode_bool=selfie_mode_bool,
+                input_image_base64=None,
+                proxy=proxy,
             )
-            task_started = True
+            delegated_to_generate = True
         except Exception as exc:
-            logger.error("[DrawPicture] 启动生图任务失败: %s", exc, exc_info=True)
-            return {"success": False, "error": f"启动生图任务失败: {str(exc)[:80]}"}
+            logger.error("[LLM2PicPlugin] _background_draw_picture 异常: %s", exc, exc_info=True)
+            try:
+                await self._ctx_send_text(f"画图出错了: {str(exc)[:80]}", stream_id)
+            except Exception:
+                pass
         finally:
-            if not task_started:
+            if not delegated_to_generate:
                 self._release_generation_lock(stream_id)
-        await self._ctx_send_text("正在生成图片，请稍等...", stream_id)
-        return {"success": True, "content": "已开始生成图片，完成后会直接发送。"}
 
     async def _background_generate_and_send(
         self,
@@ -1158,6 +1198,8 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 # 有图片但没指定 edit 风格 → WD14 反推 + 传图给视觉 LLM 融合生成 tag
                 reference_tags = ""
                 wd14_config = plugin_config.get("wd14", {})
+                max_size = int(wd14_config.get("max_image_size", 1024) or 1024)
+                wd14_image = _resize_image_for_wd14(input_image_base64, max_size)
                 if _normalize_bool(wd14_config.get("enabled", True)):
                     try:
                         logger.info("[DirectPic] 检测到图片，开始 WD14 反推")
@@ -1165,7 +1207,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                         threshold = float(wd14_config.get("threshold", 0.35) or 0.35)
                         timeout = float(wd14_config.get("timeout", 60.0) or 60.0)
                         wd14_result = await reverse_tag_image(
-                            input_image_base64,
+                            wd14_image,
                             endpoint=endpoint,
                             threshold=threshold,
                             timeout=timeout,
@@ -1186,7 +1228,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     nsfw_allowed=nsfw_allowed,
                     custom_system_prompt=str(proxy.get_config("llm.system_prompt", "") or ""),
                     reference_tags=reference_tags,
-                    reference_image_base64=input_image_base64,
+                    reference_image_base64=wd14_image,
                 )
                 if not prompt_result.success:
                     await self._ctx_send_text(f"/pic 提示词生成失败: {prompt_result.error[:80]}", stream_id)
