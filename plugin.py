@@ -776,8 +776,6 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 logger.info("[DrawPicture] 出图保护拦截: category=%s error=%s", guard_category, guard_error)
                 return {"success": False, "error": guard_error}
 
-            self._mark_draw_guard_allowed(stream_id)
-
             # WD14 反推 + LLM prompt 生成 + NAI 出图全部丢后台
             asyncio.create_task(
                 self._background_draw_picture(
@@ -960,6 +958,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 input_image_base64=input_image_base64,
             ),
             failure_prefix="画图失败了",
+            update_draw_guard=True,
         )
 
     async def _run_generation_and_send(
@@ -970,6 +969,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         proxy: _ToolRuntimeProxy | _CommandRuntimeProxy,
         request: ImageGenerationRequest,
         failure_prefix: str,
+        update_draw_guard: bool = False,
     ) -> None:
         """统一执行生图请求并发送结果。"""
         generation_result = await generate_image(
@@ -981,6 +981,8 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             success, message = await proxy._handle_image_result(generation_result.result, prompt=request.prompt)
             if not success:
                 await self._ctx_send_text(message, stream_id)
+            elif update_draw_guard:
+                self._mark_draw_guard_allowed(stream_id)
         else:
             await self._ctx_send_text(f"{failure_prefix}: {str(generation_result.result)[:80]}", stream_id)
 

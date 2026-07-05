@@ -278,7 +278,7 @@ class _RuntimeBridgeMixin:
                 builder.add_text_content(str(prompt or ""))
                 builder.add_image_content(
                     image_base64=image_base64,
-                    image_format="png",
+                    image_format="jpeg",
                     support_formats=client.get_support_image_formats(),
                 )
                 return [builder.build()]
