@@ -65,6 +65,7 @@ class _FallbackLLMProxy:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     image_base64=image_base64 or None,
+                    chat_messages=kwargs.get("chat_messages"),
                 )
                 if _llm_response_usable_for_prompt(result):
                     return result
@@ -251,6 +252,7 @@ class _RuntimeBridgeMixin:
         temperature: Any = None,
         max_tokens: Any = None,
         image_base64: Optional[str] = None,
+        chat_messages: Optional[str] = None,
     ) -> dict[str, Any]:
         from src.services import llm_service
 
@@ -301,7 +303,11 @@ class _RuntimeBridgeMixin:
                 }
             except Exception as exc:
                 logger.warning("[LLM2picBridge] 视觉模型调用失败，降级为纯文本: %s", exc)
-                # Fallback to text-only
+                # Fallback to text-only — inject VLM description if available
+                if chat_messages and isinstance(prompt, str):
+                    vlm_desc = self._extract_vlm_image_description(str(chat_messages))
+                    if vlm_desc and "## VLM 识图结果" not in str(prompt):
+                        prompt = f"{prompt}\n\n## VLM 识图结果（视觉调用失败，由 VLM 识别补充）\n{vlm_desc}"
 
         result = await llm_service.generate(
             llm_service.LLMServiceRequest(

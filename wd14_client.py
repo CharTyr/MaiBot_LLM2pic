@@ -7,15 +7,50 @@ from an image (base64). Used to support "引用图片 → 反推 tag → 融合�
 from typing import Any, Optional
 import asyncio
 import base64
+import hashlib
 import json
+import time
 import urllib.request
 import urllib.error
+from collections import OrderedDict
 
 from src.common.logger import get_logger
 
 logger = get_logger("MaiBot_LLM2pic")
 
 DEFAULT_ENDPOINT = "https://seckchiho--wd14-tagger-web-tag.modal.run"
+
+# ---- LRU cache for WD14 results ----
+_WD14_CACHE: "OrderedDict[str, tuple[Optional['WD14Result'], float]]" = OrderedDict()
+_WD14_CACHE_MAX = 20
+_WD14_CACHE_TTL = 600.0  # 10 minutes
+
+
+def _image_hash(image_base64: str) -> str:
+    try:
+        raw = base64.b64decode(image_base64, validate=False)
+        return hashlib.md5(raw).hexdigest()
+    except Exception:
+        return hashlib.md5(image_base64.encode()).hexdigest()
+
+
+def _wd14_cache_get(h: str) -> Optional["WD14Result"]:
+    entry = _WD14_CACHE.get(h)
+    if entry is None:
+        return None
+    result, ts = entry
+    if time.time() - ts > _WD14_CACHE_TTL:
+        _WD14_CACHE.pop(h, None)
+        return None
+    _WD14_CACHE.move_to_end(h)
+    return result
+
+
+def _wd14_cache_set(h: str, result: Optional["WD14Result"]) -> None:
+    _WD14_CACHE[h] = (result, time.time())
+    _WD14_CACHE.move_to_end(h)
+    while len(_WD14_CACHE) > _WD14_CACHE_MAX:
+        _WD14_CACHE.popitem(last=False)
 
 
 class WD14Result:
@@ -132,24 +167,50 @@ async def reverse_tag_image(
     endpoint: str = DEFAULT_ENDPOINT,
     threshold: float = 0.35,
     timeout: float = 60.0,
+    max_retries: int = 2,
 ) -> Optional[WD14Result]:
     """Reverse-tag an image (base64) via the WD14 tagger endpoint.
 
     Returns WD14Result on success, None on failure.
+    Caches results by image hash (LRU, TTL 10min). Retries on transient errors.
     """
     if not image_base64:
         return None
-    try:
-        raw = await asyncio.to_thread(_call_wd14_endpoint, image_base64, endpoint, threshold, timeout)
-        result = WD14Result(raw)
-        if result.success:
-            logger.info("[WD14] reverse-tag OK: %d general tags, prompt len=%d", len(result.general), len(result.prompt))
-            return result
-        logger.warning("[WD14] reverse-tag returned empty prompt: %s", str(raw)[:200])
-        return None
-    except urllib.error.URLError as exc:
-        logger.error("[WD14] reverse-tag request failed: %s", exc)
-        return None
-    except Exception as exc:
-        logger.error("[WD14] reverse-tag unexpected error: %s", exc, exc_info=True)
-        return None
+
+    h = _image_hash(image_base64)
+    cached = _wd14_cache_get(h)
+    if cached is not None:
+        logger.info("[WD14] cache hit (hash=%s...)", h[:12])
+        return cached
+    # None cached means "checked but failed" — don't re-hit endpoint repeatedly
+    # However we can't distinguish "never checked" from "checked and failed",
+    # so we only cache successes. Failures always retry.
+
+    last_error: Optional[str] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw = await asyncio.to_thread(_call_wd14_endpoint, image_base64, endpoint, threshold, timeout)
+            result = WD14Result(raw)
+            if result.success:
+                logger.info(
+                    "[WD14] reverse-tag OK (attempt %s/%s): %d general tags, prompt len=%d",
+                    attempt, max_retries, len(result.general), len(result.prompt),
+                )
+                _wd14_cache_set(h, result)
+                return result
+            logger.warning("[WD14] reverse-tag returned empty prompt (attempt %s/%s): %s", attempt, max_retries, str(raw)[:200])
+            last_error = "empty prompt"
+        except (urllib.error.URLError, asyncio.TimeoutError, OSError) as exc:
+            last_error = str(exc)
+            logger.warning("[WD14] reverse-tag request failed (attempt %s/%s): %s", attempt, max_retries, exc)
+        except Exception as exc:
+            last_error = str(exc)
+            logger.error("[WD14] reverse-tag unexpected error (attempt %s/%s): %s", attempt, max_retries, exc, exc_info=True)
+
+        if attempt < max_retries:
+            backoff = 2.0 * attempt
+            logger.info("[WD14] retrying in %.1fs ...", backoff)
+            await asyncio.sleep(backoff)
+
+    logger.error("[WD14] reverse-tag exhausted %s retries: %s", max_retries, last_error)
+    return None

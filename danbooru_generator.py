@@ -325,6 +325,7 @@ async def generate_danbooru_prompt(
     base_delay = max(0.5, float(llm_config.get("prompt_retry_delay_seconds", 2) or 2))
     temperature = float(llm_config.get("temperature", 0.2) or 0.2)
     last_error = "LLM生成失败"
+    vision_failed = False  # if vision call fails, downgrade subsequent retries to text-only
 
     result: dict[str, Any] | None = None
     response_text = ""
@@ -337,7 +338,7 @@ async def generate_danbooru_prompt(
                 "model": model,
                 "temperature": temperature,
             }
-            if reference_image_base64:
+            if reference_image_base64 and not vision_failed:
                 generate_kwargs["image_base64"] = reference_image_base64
                 generate_kwargs["chat_messages"] = chat_messages
             result = await llm.generate(**generate_kwargs)
@@ -349,6 +350,9 @@ async def generate_danbooru_prompt(
                 max_attempts,
                 exc,
             )
+            if reference_image_base64 and not vision_failed:
+                vision_failed = True
+                logger.info("[DanbooruPrompt] vision 调用失败，后续 retry 降级为纯文本（用 WD14+VLM tag）")
             if attempt < max_attempts:
                 await asyncio.sleep(base_delay * attempt)
                 continue

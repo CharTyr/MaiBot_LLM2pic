@@ -341,8 +341,11 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
 
     config_model = LLM2PicPluginConfig
 
-    _pending_generation_streams: set[str] = set()
+    _pending_generation_streams: dict[str, float] = {}  # stream_key -> acquire timestamp
     _last_guarded_draw_at: dict[str, float] = {}
+    _background_tasks: set[asyncio.Task] = set()
+    _global_concurrency: int = 0  # current global concurrent image generations
+    _global_concurrency_limit: int = 3  # max concurrent generations across all streams
     _NEGATIVE_DRAW_INTENT_KEYWORDS = (
         "别画",
         "不要画",
@@ -657,13 +660,30 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         if not _normalize_bool(guard_config.get("pending_lock_enabled", True)):
             return True
         key = self._generation_stream_key(stream_id)
-        if key in self._pending_generation_streams:
+        now = time.time()
+        # Expire stale locks (e.g. background task crashed without release)
+        lock_timeout = float(guard_config.get("lock_timeout_seconds", 300.0) or 300.0)
+        existing = self._pending_generation_streams.get(key)
+        if existing is not None:
+            if now - existing < lock_timeout:
+                return False
+            logger.warning("[LLM2pic] generation lock stale for %s (held %.0fs, timeout=%.0fs), force-releasing", key, now - existing, lock_timeout)
+        # Global concurrency limit
+        if len(self._pending_generation_streams) >= self._global_concurrency_limit:
+            logger.info("[LLM2pic] global concurrency limit reached (%s/%s), rejecting stream %s", len(self._pending_generation_streams), self._global_concurrency_limit, key)
             return False
-        self._pending_generation_streams.add(key)
+        self._pending_generation_streams[key] = now
         return True
 
     def _release_generation_lock(self, stream_id: str) -> None:
-        self._pending_generation_streams.discard(self._generation_stream_key(stream_id))
+        self._pending_generation_streams.pop(self._generation_stream_key(stream_id), None)
+
+    def _spawn_background_task(self, coro: Any) -> asyncio.Task:
+        """Create a tracked asyncio task to prevent GC silent-kill."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     @staticmethod
     def _last_chat_line(chat_messages: str) -> str:
@@ -777,7 +797,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                 return {"success": False, "error": guard_error}
 
             # WD14 反推 + LLM prompt 生成 + NAI 出图全部丢后台
-            asyncio.create_task(
+            self._spawn_background_task(
                 self._background_draw_picture(
                     plugin_config=plugin_config,
                     stream_id=stream_id,
@@ -1042,7 +1062,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
 
         try:
             # 后台异步执行，快速返回避免 RPC 超时
-            asyncio.create_task(
+            self._spawn_background_task(
                 self._background_edit_picture(
                     plugin_config=plugin_config,
                     stream_id=stream_id,
@@ -1155,7 +1175,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
 
         try:
             # 非空 prompt：后台异步生成
-            asyncio.create_task(
+            self._spawn_background_task(
                 self._background_direct_pic(
                     plugin_config=plugin_config,
                     stream_id=stream_id,
