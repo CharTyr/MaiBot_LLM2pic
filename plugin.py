@@ -250,6 +250,22 @@ class ComponentsConfig(PluginConfigBase):
     enable_direct_pic_command: bool = Field(default=True, description="是否启用 /pic 指令")
 
 
+class GitHubConfig(PluginConfigBase):
+    """GitHub 自动上传配置。生成的图片发送成功后异步上传到指定仓库。"""
+
+    __ui_label__ = "GitHub 上传"
+    __ui_icon__ = "upload-cloud"
+    __ui_order__ = 9
+
+    enabled: bool = Field(default=False, description="是否启用自动上传到 GitHub")
+    token: str = Field(default="", description="GitHub Personal Access Token（contents:write 权限）；留空时从 anime.regex_url.base_url 的 git_token 参数回退提取")
+    owner: str = Field(default="CharTyr", description="目标仓库 owner")
+    repo: str = Field(default="my-images", description="目标仓库名")
+    path_prefix: str = Field(default="images", description="仓库内路径前缀，按日期分文件夹：<prefix>/<YYYY-MM-DD>/<文件名>")
+    branch: str = Field(default="main", description="目标分支")
+    commit_message: str = Field(default="", description="自定义 commit message（留空使用默认）")
+
+
 class LLM2PicPluginConfig(PluginConfigBase):
     """LLM2PIC 插件配置。"""
 
@@ -262,6 +278,7 @@ class LLM2PicPluginConfig(PluginConfigBase):
     tag_retriever: TagRetrieverConfig = Field(default_factory=TagRetrieverConfig)
     wd14: Wd14Config = Field(default_factory=Wd14Config)
     components: ComponentsConfig = Field(default_factory=ComponentsConfig)
+    github: GitHubConfig = Field(default_factory=GitHubConfig)
 
 
 _DRAW_PICTURE_TOOL_PARAMETERS = [
@@ -286,6 +303,17 @@ _DRAW_PICTURE_TOOL_PARAMETERS = [
         name="nsfw_allowed",
         param_type=ToolParamType.BOOLEAN,
         description="是否允许本次生图按 NSFW Danbooru 规则生成；仅当用户明确请求成人向/NSFW 内容时设为 true，默认 false。",
+        required=False,
+        default=False,
+    ),
+    ToolParameterInfo(
+        name="use_reference_image",
+        param_type=ToolParamType.BOOLEAN,
+        description=(
+            "是否从用户发送或引用的图片中反推 Danbooru tag 作为参考。当用户发送/引用了图片并要求"
+            "基于该图片仿画风/仿角色/照着画/参考画时设为 true。插件会自动提取图片、WD14 反推 tag、"
+            "注入 LLM 上下文与用户文字融合生成最终 prompt。如果用户没有发图或引用图，不要设为 true。"
+        ),
         required=False,
         default=False,
     ),
@@ -701,6 +729,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         description: str = "",
         selfie_mode: bool = False,
         nsfw_allowed: bool = False,
+        use_reference_image: bool = False,
         stream_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -722,6 +751,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                     "description": description,
                     "selfie_mode": selfie_mode,
                     "nsfw_allowed": nsfw_allowed,
+                    "use_reference_image": use_reference_image,
                 },
                 session_message=kwargs.get("message"),
             )
@@ -750,14 +780,15 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             persona = await proxy._get_persona()
             custom_system_prompt = str(proxy.get_config("llm.system_prompt", "") or "")
 
-            # WD14 反推：检测引用图片或消息自带图片，提取 Danbooru tag
+            # WD14 反推：由 planner 通过 use_reference_image 参数控制
             reference_tags = ""
+            use_ref_image = _normalize_bool(proxy.tool_args.get("use_reference_image", False))
             wd14_config = plugin_config.get("wd14", {})
-            if _normalize_bool(wd14_config.get("enabled", True)):
+            if use_ref_image and _normalize_bool(wd14_config.get("enabled", True)):
                 try:
                     input_image = await self._ctx_extract_image_from_recent(stream_id)
                     if input_image:
-                        logger.info("[DrawPicture] 检测到引用/附带图片，开始 WD14 反推")
+                        logger.info("[DrawPicture] use_reference_image=true，开始 WD14 反推")
                         endpoint = str(wd14_config.get("endpoint", WD14_DEFAULT_ENDPOINT) or WD14_DEFAULT_ENDPOINT)
                         threshold = float(wd14_config.get("threshold", 0.35) or 0.35)
                         timeout = float(wd14_config.get("timeout", 60.0) or 60.0)
@@ -772,11 +803,14 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
                             logger.info("[DrawPicture] WD14 反推成功: %s...", reference_tags[:120])
                             await self._ctx_send_text("已从参考图反推 tag，正在融合生成...", stream_id)
                         else:
-                            logger.warning("[DrawPicture] WD14 反推失败或无结果")
+                            logger.warning("[DrawPicture] WD14 反推失败或无结果，按纯文字生成")
+                            await self._ctx_send_text("反推失败，按文字描述生成...", stream_id)
                     else:
-                        logger.debug("[DrawPicture] 未检测到引用/附带图片，跳过 WD14 反推")
+                        logger.warning("[DrawPicture] use_reference_image=true 但未检测到图片")
+                        await self._ctx_send_text("没找到参考图，按文字描述生成...", stream_id)
                 except Exception as exc:
                     logger.warning("[DrawPicture] WD14 反推异常: %s", exc, exc_info=True)
+                    await self._ctx_send_text("反推出错，按文字描述生成...", stream_id)
 
             prompt_result = await proxy._generate_prompt_with_style(
                 user_request=original_description or "根据聊天内容生成一张合适的图片",
@@ -901,7 +935,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
             request=request,
         )
         if generation_result.success:
-            success, message = await proxy._handle_image_result(generation_result.result)
+            success, message = await proxy._handle_image_result(generation_result.result, prompt=request.prompt)
             if not success:
                 await self._ctx_send_text(message, stream_id)
         else:
