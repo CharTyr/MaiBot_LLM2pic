@@ -298,6 +298,7 @@ async def generate_danbooru_prompt(
     nsfw_allowed: bool,
     custom_system_prompt: str = "",
     reference_tags: str = "",
+    reference_image_base64: str = "",
 ) -> PromptGenerationResult:
     """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
@@ -331,11 +332,14 @@ async def generate_danbooru_prompt(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            result = await llm.generate(
-                prompt=full_prompt,
-                model=model,
-                temperature=temperature,
-            )
+            generate_kwargs: dict[str, Any] = {
+                "prompt": full_prompt,
+                "model": model,
+                "temperature": temperature,
+            }
+            if reference_image_base64:
+                generate_kwargs["image_base64"] = reference_image_base64
+            result = await llm.generate(**generate_kwargs)
         except Exception as exc:
             last_error = str(exc)
             logger.warning(

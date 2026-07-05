@@ -53,6 +53,8 @@ class _FallbackLLMProxy:
         prompt = kwargs.get("prompt")
         temperature = kwargs.get("temperature")
         max_tokens = kwargs.get("max_tokens")
+        image_base64 = kwargs.get("image_base64") or ""
+
         if self._target.model_name:
             try:
                 result = await self._runtime._ctx_generate_with_direct_model(
@@ -61,6 +63,7 @@ class _FallbackLLMProxy:
                     model_name=self._target.model_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    image_base64=image_base64 or None,
                 )
                 if _llm_response_usable_for_prompt(result):
                     return result
@@ -81,6 +84,8 @@ class _FallbackLLMProxy:
 
         fallback_kwargs = dict(kwargs)
         fallback_kwargs["model"] = self._target.task_name
+        # ctx.llm.generate 不支持 image_base64，传图只在 direct model 路径有效
+        fallback_kwargs.pop("image_base64", None)
         return await self._runtime.ctx.llm.generate(**fallback_kwargs)
 
 
@@ -230,8 +235,58 @@ class _RuntimeBridgeMixin:
         model_name: str,
         temperature: Any = None,
         max_tokens: Any = None,
+        image_base64: Optional[str] = None,
     ) -> dict[str, Any]:
         from src.services import llm_service
+
+        # Check if the model supports vision
+        use_image = False
+        if image_base64:
+            try:
+                from src.llm_models.utils_model import TempMethodsLLMUtils
+                model_info = TempMethodsLLMUtils.get_model_info_by_name(model_name)
+                use_image = bool(getattr(model_info, "visual", False))
+                if use_image:
+                    logger.info("[LLM2picBridge] 模型 %s 支持视觉，直接传图给 LLM", model_name)
+                else:
+                    logger.info("[LLM2picBridge] 模型 %s 不支持视觉，不传图", model_name)
+            except Exception as exc:
+                logger.warning("[LLM2picBridge] 检查模型 %s 视觉能力失败: %s", model_name, exc)
+
+        if use_image and image_base64:
+            # Use message_factory to include image in the request
+            from src.llm_models.utils_model import TempMethodsLLMUtils
+            from src.llm_models.payload_content.message import MessageBuilder
+
+            def message_factory(client) -> list:
+                builder = MessageBuilder()
+                builder.add_text_content(str(prompt or ""))
+                builder.add_image_content(
+                    image_base64=image_base64,
+                    image_format="png",
+                    support_formats=client.get_support_image_formats(),
+                )
+                return [builder.build()]
+
+            llm_client = llm_service.LLMServiceClient(
+                task_name=task_name,
+                request_type=f"plugin.{getattr(self, 'plugin_id', 'chartyr.maibot-llm2pic')}",
+            )
+            try:
+                generation_result = await llm_client.generate_response_with_message_async(
+                    message_factory=message_factory,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    model_name=model_name,
+                )
+                return generation_result.to_capability_payload() if hasattr(generation_result, "to_capability_payload") else {
+                    "success": bool(generation_result.response),
+                    "response": generation_result.response,
+                    "reasoning": generation_result.reasoning,
+                }
+            except Exception as exc:
+                logger.warning("[LLM2picBridge] 视觉模型调用失败，降级为纯文本: %s", exc)
+                # Fallback to text-only
 
         result = await llm_service.generate(
             llm_service.LLMServiceRequest(
@@ -376,6 +431,7 @@ class _RuntimeBridgeMixin:
         nsfw_allowed: bool = False,
         custom_system_prompt: str = "",
         reference_tags: str = "",
+        reference_image_base64: str = "",
     ) -> PromptGenerationResult:
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
             llm_target = await self._ctx_resolve_llm_target()
@@ -390,6 +446,7 @@ class _RuntimeBridgeMixin:
                 nsfw_allowed=nsfw_allowed,
                 custom_system_prompt=custom_system_prompt,
                 reference_tags=reference_tags,
+                reference_image_base64=reference_image_base64,
             )
 
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
@@ -495,6 +552,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         nsfw_allowed: bool,
         custom_system_prompt: str,
         reference_tags: str = "",
+        reference_image_base64: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -504,6 +562,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
             nsfw_allowed=nsfw_allowed,
             custom_system_prompt=custom_system_prompt,
             reference_tags=reference_tags,
+            reference_image_base64=reference_image_base64,
         )
 
 
@@ -547,6 +606,7 @@ class _CommandRuntimeProxy(DirectPicCommand):
         nsfw_allowed: bool,
         custom_system_prompt: str,
         reference_tags: str = "",
+        reference_image_base64: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -556,4 +616,5 @@ class _CommandRuntimeProxy(DirectPicCommand):
             nsfw_allowed=nsfw_allowed,
             custom_system_prompt=custom_system_prompt,
             reference_tags=reference_tags,
+            reference_image_base64=reference_image_base64,
         )

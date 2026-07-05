@@ -60,6 +60,55 @@ class WD14Result:
             ]
         return ", ".join(parts)
 
+    def format_for_llm(self) -> str:
+        """Return a structured, LLM-friendly text summary of the WD14 reverse-tag result.
+
+        Groups general tags by confidence bucket, lists known characters and rating.
+        Omit sections that have no data. Return empty string when general is empty.
+        """
+        if not self.general:
+            return ""
+
+        sorted_general = sorted(self.general.items(), key=lambda x: -x[1])
+
+        high_tags = [(tag, conf) for tag, conf in sorted_general if conf >= 0.6]
+        mid_tags = [(tag, conf) for tag, conf in sorted_general if 0.35 <= conf < 0.6]
+        low_tags = [(tag, conf) for tag, conf in sorted_general if conf < 0.35]
+
+        def _fmt(items: list[tuple[str, float]]) -> str:
+            return ", ".join(f"{tag} ({conf:.2f})" for tag, conf in items)
+
+        lines: list[str] = ["## 参考图 WD14 反推结果"]
+
+        if high_tags:
+            lines.append("")
+            lines.append("### 高置信度 tag（confidence ≥ 0.6）")
+            lines.append(_fmt(high_tags))
+
+        if mid_tags:
+            lines.append("")
+            lines.append("### 中置信度 tag（0.35 ≤ confidence < 0.6）")
+            lines.append(_fmt(mid_tags))
+
+        if self.character:
+            char_items = sorted(self.character.items(), key=lambda x: -x[1])
+            lines.append("")
+            lines.append("### 已知角色（如保留此角色，不要补充外貌 tag）")
+            lines.append(_fmt(char_items))
+
+        if self.rating:
+            top_rating = max(self.rating.items(), key=lambda x: x[1])
+            lines.append("")
+            lines.append("### 安全等级")
+            lines.append(f"{top_rating[0]} ({top_rating[1]:.2f})")
+
+        if low_tags:
+            lines.append("")
+            lines.append("### 低置信度 tag（confidence < 0.35，参考用，不建议直接使用）")
+            lines.append(_fmt(low_tags))
+
+        return "\n".join(lines).strip()
+
 
 def _call_wd14_endpoint(image_base64: str, endpoint: str, threshold: float, timeout: float) -> dict[str, Any]:
     """Synchronous HTTP POST to the WD14 tagger endpoint."""
