@@ -6,6 +6,7 @@
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+import re
 import time
 
 from .danbooru_generator import (
@@ -421,6 +422,30 @@ class _RuntimeBridgeMixin:
                     return result
         return None
 
+    @staticmethod
+    def _extract_vlm_image_description(chat_messages: str) -> str:
+        """从聊天记录文本中提取 VLM 识图结果（格式 `[图片：描述内容]`）。
+
+        MaiBot 的消息处理会把图片识别结果写入 processed_plain_text，格式为
+        `[图片：描述内容]`。当写 tag 的 LLM 不支持视觉时，用这些描述作为补充。
+        """
+        text = str(chat_messages or "")
+        if not text:
+            return ""
+        # 匹配 [图片：...] / [图片:...] 片段
+        matches = re.findall(r"\[图片[:：]\s*([^\]]+)\]", text)
+        if not matches:
+            return ""
+        # 合并多张图的描述，去重
+        seen: set[str] = set()
+        descriptions: list[str] = []
+        for desc in matches:
+            normalized = desc.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                descriptions.append(normalized)
+        return "\n".join(descriptions) if descriptions else ""
+
     async def _ctx_generate_prompt_with_style(
         self,
         *,
@@ -432,7 +457,18 @@ class _RuntimeBridgeMixin:
         custom_system_prompt: str = "",
         reference_tags: str = "",
         reference_image_base64: str = "",
+        vlm_description: str = "",
     ) -> PromptGenerationResult:
+        # 当有参考图但写 tag 的模型不支持视觉时，把 VLM 识图结果拼到 reference_tags
+        effective_reference_tags = reference_tags
+        if reference_image_base64 and not vlm_description:
+            vlm_desc = self._extract_vlm_image_description(chat_messages)
+            if vlm_desc:
+                vlm_description = vlm_desc
+        if vlm_description:
+            vlm_block = f"\n\n## VLM 识图结果（写 tag 的模型不支持视觉，由 VLM 识别补充）\n{vlm_description}"
+            effective_reference_tags = f"{effective_reference_tags}{vlm_block}".strip()
+
         if str(self._config_get("llm.prompt_mode", "danbooru") or "danbooru").strip().lower() == "danbooru":
             llm_target = await self._ctx_resolve_llm_target()
             return await generate_danbooru_prompt(
@@ -445,7 +481,7 @@ class _RuntimeBridgeMixin:
                 selfie_mode=selfie_mode,
                 nsfw_allowed=nsfw_allowed,
                 custom_system_prompt=custom_system_prompt,
-                reference_tags=reference_tags,
+                reference_tags=effective_reference_tags,
                 reference_image_base64=reference_image_base64,
             )
 
@@ -553,6 +589,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         custom_system_prompt: str,
         reference_tags: str = "",
         reference_image_base64: str = "",
+        vlm_description: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -563,6 +600,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
             custom_system_prompt=custom_system_prompt,
             reference_tags=reference_tags,
             reference_image_base64=reference_image_base64,
+            vlm_description=vlm_description,
         )
 
 
@@ -607,6 +645,7 @@ class _CommandRuntimeProxy(DirectPicCommand):
         custom_system_prompt: str,
         reference_tags: str = "",
         reference_image_base64: str = "",
+        vlm_description: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -617,4 +656,5 @@ class _CommandRuntimeProxy(DirectPicCommand):
             custom_system_prompt=custom_system_prompt,
             reference_tags=reference_tags,
             reference_image_base64=reference_image_base64,
+            vlm_description=vlm_description,
         )
