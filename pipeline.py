@@ -261,10 +261,6 @@ async def _generate_with_newapi_nai(
     client = NewApiNaiClient(base_url=base_url, api_key=api_key, log_prefix=f"[{ctx.source}]")
 
     # 调用
-    import asyncio
-    result = await asyncio.to_thread(lambda: asyncio.run(client.generate(gen_ctx)) if False else None)
-    # NewApiNaiClient.generate 是 async 但内部用同步 urllib
-    # 用 asyncio.to_thread 包装同步部分
     result = await client.generate(gen_ctx)
 
     # 降级：参考图失败 → 退回 txt2img
