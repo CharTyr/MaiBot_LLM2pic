@@ -16,6 +16,7 @@ import zipfile
 
 from src.common.logger import get_logger
 
+from .github_uploader import upload_image_to_github
 from .utils import (
     _compress_image_if_needed,
     _looks_like_image_bytes,
@@ -69,6 +70,19 @@ class ImageClientMixin:
     async def send_image(self, image_base64: str) -> bool:
         del image_base64
         return False
+
+    def _schedule_github_upload(self, image_base64: str, *, prompt: str = "") -> None:
+        """图片发送成功后，后台异步上传到 GitHub 仓库（不阻塞主流程）。
+
+        失败仅记录日志。通过 ``asyncio.create_task`` 调度，避免影响返回值。
+        ``prompt`` 会作为 commit message 保存，前端可据此展示该图的 tag。
+        """
+        try:
+            asyncio.create_task(
+                upload_image_to_github(image_base64, get_config=self.get_config, prompt=prompt)
+            )
+        except Exception as exc:
+            logger.warning(f"{self.log_prefix} 调度 GitHub 上传失败: {exc!r}")
 
     async def _extract_input_image(self) -> Optional[str]:
         """从当前消息中提取图片，用于图生图。"""
@@ -149,8 +163,8 @@ class ImageClientMixin:
             unique_keywords.append(keyword)
         return ", ".join(unique_keywords)
 
-    async def _handle_image_result(self, result: str) -> Tuple[bool, str]:
-        """发送 base64 图片或下载 URL 后发送。"""
+    async def _handle_image_result(self, result: str, *, prompt: str = "") -> Tuple[bool, str]:
+        """发送 base64 图片或下载 URL 后发送，并上传原始 PNG 到 GitHub（保留 tag 元数据）。"""
         if result.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
             crop_enabled = bool(self.get_config("generation.crop_enabled", False))
             if crop_enabled:
@@ -161,7 +175,8 @@ class ImageClientMixin:
                 except Exception as exc:
                     logger.error(f"{self.log_prefix} Base64 图片裁切失败: {exc}")
 
-            result = _compress_image_if_needed(result)
+            # 上传原始图片到 GitHub（保留 PNG tag 元数据），不压缩直接发送
+            self._schedule_github_upload(result, prompt=prompt)
             if await self.send_image(result):
                 logger.info(f"{self.log_prefix} 图片已发送")
                 return True, "图片已发送"
@@ -180,7 +195,8 @@ class ImageClientMixin:
         if not encode_success:
             logger.error(f"{self.log_prefix} 下载图片失败: {encode_result}")
             return False, f"图片下载失败: {encode_result}"
-        encode_result = _compress_image_if_needed(encode_result)
+        # 上传原始图片到 GitHub，不压缩直接发送
+        self._schedule_github_upload(encode_result, prompt=prompt)
         if await self.send_image(encode_result):
             logger.info(f"{self.log_prefix} 图片已发送")
             return True, "图片已发送"

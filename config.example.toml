@@ -223,6 +223,33 @@ top_k = 20
 min_score = 0.3
 
 # ============================================================
+# GitHub 自动上传配置
+# ============================================================
+# 生成的所有图片在发送成功后，会异步上传到指定 GitHub 仓库。
+# 上传失败仅记录日志，不影响图片发送。
+# 需要 Personal Access Token（repo / contents:write 权限）。
+[github]
+# 是否启用自动上传
+enabled = false
+
+# GitHub Personal Access Token（需要 contents:write 权限）
+# 建议使用 fine-grained token，仅授权目标仓库的 Contents: Read and Write
+token = ""
+
+# 目标仓库 owner / repo
+owner = "CharTyr"
+repo = "my-images"
+
+# 仓库内路径前缀，按日期分文件夹：<path_prefix>/<YYYY-MM-DD>/<时间戳>.<ext>
+path_prefix = "images"
+
+# 目标分支（仓库默认分支通常为 main 或 master）
+branch = "main"
+
+# 自定义 commit message（留空则使用默认 "upload image <path>"）
+commit_message = ""
+
+# ============================================================
 # 组件启用配置
 # ============================================================
 [components]
