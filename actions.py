@@ -10,8 +10,8 @@ class DrawPictureToolMetadata(ImageClientMixin):
         "生成并发送图片（纯文生图，二次元/动漫风格）。触发场景：用户让你画图/发图/自拍、"
         "要求看你长什么样/在干嘛、说\"画一张...\"\"给我看看...\"。调用时必须把用户明确要求的主体、"
         "角色名、动作和场景完整写进 description，禁止用你自己替换用户指定主体。如果用户发送或引用了图片"
-        "并要求基于该图片仿画风/仿角色/照着画/参考画，使用此工具并将 use_reference_image 设为 true——"
-        "系统会自动提取参考图、WD14 反推 Danbooru tag、与用户文字融合后生成最终 prompt。"
+        "并要求基于该图片画图，将 use_reference_image 设为 true，并在 reference_mode 中指定参考方式："
+        "照姿势/构图→i2i，用这个角色/脸→char_ref，仿画风/氛围→vibe。系统会自动提取参考图并调用对应 NAI 能力。"
         "只有用户明确要求画图/出图/发自拍时才能调用此工具。注意：如果用户发送了图片并要求修改/编辑，"
         "或明确要求写实风格，请使用 edit_picture 工具。"
     )
@@ -42,9 +42,13 @@ class DrawPictureToolMetadata(ImageClientMixin):
 - 用户发送了图片并要求修改/编辑/重绘/换风格
 - 用户要求生成写实/真实/照片级别的图片
 
-【参考图片反推模式】
-当用户发送或引用了图片，并要求"照着这张画""仿一张""参考这个画风""画成这种风格"时：
+【参考图片模式】
+当用户发送或引用了图片，并要求基于该图片画图时：
 - 使用 draw_picture 工具，并将 use_reference_image 参数设为 true
+- 在 reference_mode 中指定参考方式：
+  - "i2i"：照姿势/构图/动作画（默认）
+  - "char_ref"：用这个角色/脸画
+  - "vibe"：仿画风/氛围
 - description 里写用户要求的主体和改动（如"东雪莲当主角，照着参考图画"）
 - 系统会自动提取参考图、WD14 反推 tag、与 description 融合生成 Danbooru prompt
 - 注意：用户要求"改这张图的XX"（保留原图构图只改局部）应走 edit_picture，不是 draw_picture
