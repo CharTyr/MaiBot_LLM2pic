@@ -30,6 +30,29 @@ crop_enabled = false
 crop_position = "bottom"  # 可选: top, bottom, left, right
 crop_pixels = 40
 
+# ============================================================
+# 参考图模式配置（i2i / char-ref / vibe）
+# ============================================================
+# 仅当用户通过 /pic i2i|char-ref|vibe 或 draw_picture(use_reference_image=true)
+# 显式要求参考图时才生效。日常 txt2img 不受影响。
+[generation.ref_image]
+# i2i（图生图）参数
+i2i_strength = 0.7       # 0.01-0.99，越低越像原图
+i2i_noise = 0.0          # 0.0-0.99，注入噪声量
+
+# char-ref（角色参考）参数
+char_ref_type = "character"           # character | style | character&style
+char_ref_fidelity = 1.0               # 0.0-1.0
+char_ref_strength = 1.0               # 0.0-1.0
+
+# vibe（风格迁移 / Vibe Transfer）参数
+vibe_info_extracted = 0.4             # 0.01-1.0（保守，避免角色特征被迁移）
+vibe_strength = 0.3                   # 0.01-1.0
+vibe_global_strength = 1.0            # 0.0-1.0
+
+# 附图最小边长（像素），太小则跳过参考图模式，退回 txt2img
+min_image_size = 256
+
 [generation_guard]
 # Tool 自动出图保护：减少误触发、重复触发和同群并发出图
 enabled = true
