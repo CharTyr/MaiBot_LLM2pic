@@ -23,7 +23,11 @@ from typing import Optional, Dict, Any, List
 # 5×5 网格坐标 [A-E][1-5]（NewAPI 多角色 position 字面量）
 _POSITION_GRID_RE = re.compile(r"^[A-E][1-5]$")
 
-# 拍平多人字符串的 charN: 前缀（兼容大小写、中英文冒号、可选空格）
+# 拍平多人字符串的 charN: / charN[B3]: 前缀（兼容大小写、中英文冒号、可选空格）
+_CHAR_PREFIX_WITH_POS_RE = re.compile(
+    r"^char\s*\d+\s*\[([A-Ea-e][1-5])\]\s*[:：]\s*",
+    re.IGNORECASE,
+)
 _CHAR_PREFIX_RE = re.compile(r"^char\s*\d+\s*[:：]\s*", re.IGNORECASE)
 
 _ASPECT_ALIASES = {
@@ -297,7 +301,7 @@ def extract_multi_character_payload_from_text(text: str) -> Optional[Dict[str, A
 
     Returns:
         与 :func:`extract_multi_character_payload` 同结构；解析为单人或失败时返回 ``None``。
-        反解路径不会带 position，因此 ``has_coords`` 永远为 ``False``。
+        文本 ``charN[A-E][1-5]:`` 行内坐标会写入 ``position``；全员合法坐标时 ``has_coords`` 为 ``True``。
     """
     segments = _split_multi_person_segments(text)
     if len(segments) < 3:
@@ -311,18 +315,27 @@ def extract_multi_character_payload_from_text(text: str) -> Optional[Dict[str, A
     characters: List[Dict[str, str]] = []
     for raw_segment in segments[1:]:
         cleaned = raw_segment.strip().lstrip("|").strip().rstrip(",").strip()
-        cleaned = _CHAR_PREFIX_RE.sub("", cleaned).strip()
+        position = ""
+        pos_match = _CHAR_PREFIX_WITH_POS_RE.match(cleaned)
+        if pos_match:
+            position = pos_match.group(1).upper()
+            cleaned = cleaned[pos_match.end() :].strip()
+        else:
+            cleaned = _CHAR_PREFIX_RE.sub("", cleaned).strip()
         if not cleaned:
             continue
-        characters.append({"prompt": cleaned, "negative_prompt": "", "position": ""})
+        characters.append(
+            {"prompt": cleaned, "negative_prompt": "", "position": position}
+        )
 
     if len(characters) < 2:
         return None
 
+    has_coords = all(str(item.get("position") or "").strip() for item in characters)
     return {
         "global_text": global_text,
         "characters": characters,
-        "has_coords": False,
+        "has_coords": has_coords,
     }
 
 

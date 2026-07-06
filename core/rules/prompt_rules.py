@@ -105,6 +105,14 @@ hair / haired / long hair / short hair / medium hair / eyes / eyed / bangs / twi
 
 - 同一输入应保持输出 tag 集合和顺序基本稳定
 - 不要为了变化而变化，除非用户明确要求"换一种/不一样/再来一张不同的"
+
+### 8. 东雪莲 / 画自己（与 Hermes nai-draw 对齐）
+
+- 画东雪莲、茶太、char、杉茶、自己（且非 OC 绿发设定）→ 角色 tag 用 `{{{azuma_seren}}}`（三重权重）
+- **禁止** `{{{character:AzumaSeren}}}`、`azuma seren`（空格分词）
+- 默认不堆发色瞳色（模型已知）；用户强调外貌或复杂服装导致脸不稳时，可加 `{{{silver-white twin tails}}}`, `{{{purple eyes}}}`，或将角色 tag 升至 `{{{{{azuma_seren}}}}}`（四层）
+- 用户明确要画 OC（绿发蓝眼眼镜娘）→ 不用 `azuma_seren`，用手写外貌 tag（见 custom system_prompt），禁止与东雪莲混用
+
 </hard_rules>
 """.strip()
 
@@ -191,6 +199,15 @@ _MULTI_PERSON = """
 char1:[人物1 tag],
 char2:[人物2 tag],
 ```
+
+### 文本行内坐标（与 JSON `positions` 等价）
+用户明确左右/上下/对角等布局时，在 `charN` 与冒号之间写 5×5 网格坐标：
+```
+char1[B3]:girl, ...
+char2[D3]:girl, ...
+```
+- 仅 `[A-E][1-5]`（如 `C3` 中心）；未指定方位时不要写方括号坐标
+- JSON 模式用 `positions` 数组；文本模式用 `charN[坐标]:` — 二选一，勿重复且勿乱序
 
 ### 全局段（global / base）
 - 仅写：场景、背景、光影氛围、画面特效、构图视角、（NSFW 模式下）NSFW 分级
