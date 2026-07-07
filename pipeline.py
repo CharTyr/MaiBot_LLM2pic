@@ -166,6 +166,7 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
             llm_style=prompt_result.style,
         )
         api_type = str((model_config or {}).get("api_type", "openai") or "openai").lower()
+        logger.info(f"[Pipeline] style={selected_style}, api_type={api_type}, model_config_keys={list(model_config.keys()) if model_config else None}")
 
         # ── 5. 确定目标尺寸 ──
         aspect = _normalize_aspect(prompt_result.aspect) or "portrait"
@@ -213,6 +214,8 @@ async def _generate_with_newapi_nai(
 
     # 加 custom_prompt_add
     final_prompt = ctx.proxy._build_final_prompt(base_prompt, model_config)
+    logger.info(f"[Pipeline] final_prompt (first 300): {final_prompt[:300]}")
+    logger.info(f"[Pipeline] has azuma_seren: {"azuma_seren" in final_prompt}, has characters: {bool(prompt_result.characters)}")
 
     # 构造 GenerationContext
     gen_ctx = GenerationContext(
