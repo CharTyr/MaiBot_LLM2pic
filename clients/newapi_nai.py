@@ -441,7 +441,7 @@ class NewApiNaiClient(ImageClient):
             "User-Agent": "Mozilla/5.0",
         }
 
-        prompt_preview = ctx.prompt[:80] if ctx.prompt else "(empty)"
+        prompt_preview = ctx.prompt[:200] if ctx.prompt else "(empty)"
         logger.info(
             f"{self.log_prefix} 发起 NAI 请求: model={ctx.model}, "
             f"ref_mode={ctx.ref_mode}, prompt={prompt_preview}..."
