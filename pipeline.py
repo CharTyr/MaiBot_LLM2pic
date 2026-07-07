@@ -82,12 +82,18 @@ def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> st
 
 
 async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
-    """从最近消息中提取附图 base64。"""
+    """从当前消息或引用消息中提取附图 base64。"""
     try:
+        # 1. 先从当前消息的图片段提取（直接发的图）
         if ctx.source == "direct_pic" and ctx.proxy is not None:
-            return await ctx.proxy._extract_input_image()
-        elif ctx.plugin is not None:
-            return await ctx.plugin._ctx_extract_image_from_recent(ctx.stream_id)
+            img = await ctx.proxy._extract_input_image()
+            if img:
+                return img
+        # 2. 再从引用消息中提取（引用了别人的图）
+        if ctx.plugin is not None:
+            img = await ctx.plugin._ctx_extract_image_from_recent(ctx.stream_id)
+            if img:
+                return img
     except Exception as exc:
         logger.warning("[Pipeline] 提取附图失败: %s", exc)
     return None
@@ -106,16 +112,8 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
                 ctx.ref_mode = ""
 
         # 也检测无 ref_mode 时的附图（用于 WD14 tag 增强）
-        if not attachment_b64 and ctx.source == "direct_pic" and ctx.proxy:
-            try:
-                attachment_b64 = await ctx.proxy._extract_input_image()
-            except Exception:
-                pass
-        if not attachment_b64 and ctx.source == "draw_picture" and ctx.plugin:
-            try:
-                attachment_b64 = await ctx.plugin._ctx_extract_image_from_recent(ctx.stream_id)
-            except Exception:
-                pass
+        if not attachment_b64:
+            attachment_b64 = await _extract_attachment(ctx)
 
         # ── 2. WD14 反推（有附图时都做）──
         reference_tags = ""
