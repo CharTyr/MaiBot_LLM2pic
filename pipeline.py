@@ -25,6 +25,7 @@ from .generation_service import (
     _normalize_aspect,
 )
 from .utils import _normalize_bool, _resize_image_for_wd14
+from .vibe_cache import VibeCache
 
 logger = get_logger("MaiBot_LLM2pic")
 
@@ -251,8 +252,15 @@ async def _generate_with_newapi_nai(
     elif ctx.ref_mode == "vibe" and ref_image_data_uri:
         info_ext = float(ref_cfg.get("vibe_info_extracted", 0.4) or 0.4)
         strength = float(ref_cfg.get("vibe_strength", 0.3) or 0.3)
-        gen_ctx.vibe_images = [{"image": ref_image_data_uri, "info_extracted": info_ext, "strength": strength}]
         gen_ctx.vibe_global_strength = float(ref_cfg.get("vibe_global_strength", 1.0) or 1.0)
+        # Check vibe cache_id first
+        _vibe_cache = VibeCache()
+        _cached_id = _vibe_cache.lookup(ref_image_data_uri, gen_ctx.model, info_ext)
+        if _cached_id:
+            gen_ctx.vibe_images = [{"cache_id": _cached_id, "strength": strength}]
+            logger.info(f"[Pipeline] vibe cache hit: {_cached_id[:8]}...")
+        else:
+            gen_ctx.vibe_images = [{"image": ref_image_data_uri, "info_extracted": info_ext, "strength": strength}]
 
     # 客户端
     base_url = str(mc.get("base_url", "") or "")
@@ -278,6 +286,16 @@ async def _generate_with_newapi_nai(
     if not result.success:
         await _safe_send(ctx, f"出图失败: {result.error[:80]}")
         return False
+
+    # Store vibe cache_ids if present
+    if result.success and result.vibe_cache_ids and ctx.ref_mode == "vibe" and ref_image_data_uri:
+        _vc = VibeCache()
+        info_ext = float(ref_cfg.get("vibe_info_extracted", 0.4) or 0.4)
+        for entry in result.vibe_cache_ids:
+            idx = entry.get("index", 0)
+            cid = entry.get("cache_id", "")
+            if cid and idx < len(gen_ctx.vibe_images or []):
+                _vc.store(ref_image_data_uri, gen_ctx.model, info_ext, cid)
 
     # 发送
     success, message = await ctx.proxy._handle_image_result(
