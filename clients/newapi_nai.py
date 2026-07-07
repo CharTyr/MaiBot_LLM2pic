@@ -394,8 +394,8 @@ class NewApiNaiClient(ImageClient):
         if ctx.ref_mode == "i2i" and ctx.i2i_image:
             inner["i2i"] = {
                 "image": ctx.i2i_image,
-                "strength": ctx.i2i_strength,
-                "noise": ctx.i2i_noise,
+                "strength": float(max(0.01, min(ctx.i2i_strength, 0.99))),
+                "noise": float(max(0.0, min(ctx.i2i_noise, 0.99))),
             }
         elif ctx.ref_mode == "inpaint" and ctx.inpaint_image:
             inpaint: dict[str, Any] = {
@@ -408,9 +408,13 @@ class NewApiNaiClient(ImageClient):
 
         # ── 参考图：互斥组 B（controlnet vs character_references）──
         if ctx.ref_mode == "vibe" and ctx.vibe_images:
+            vibe_imgs = ctx.vibe_images
+            if len(vibe_imgs) > 4:
+                logger.warning(f"{self.log_prefix} controlnet max 4 images, truncating from {len(vibe_imgs)}")
+                vibe_imgs = vibe_imgs[:4]
             inner["controlnet"] = {
                 "strength": ctx.vibe_global_strength,
-                "images": ctx.vibe_images,
+                "images": vibe_imgs,
             }
         elif ctx.ref_mode == "char_ref" and ctx.char_ref_image:
             inner["character_references"] = [{
