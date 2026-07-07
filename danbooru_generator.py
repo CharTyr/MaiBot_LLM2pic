@@ -227,7 +227,20 @@ def _postprocess_multi_character_payload(
             remove_persona_appearance=not user_mentions_appearance(user_request),
         )
     elif "azuma_seren" not in global_text.lower() and "character:azuma" not in global_text.lower():
-        global_text = "{{{azuma_seren}}}, silver-white twin tails, purple eyes, " + global_text
+        # Multi-character: inject azuma_seren + appearance into the matching character entry, not global
+        _azuma_anchor = "{{{azuma_seren}}}, silver-white twin tails, purple eyes"
+        _injected = False
+        for _ci, _char in enumerate(characters):
+            _cp = str(_char.get("prompt", "") or "").lower()
+            if "azuma" in _cp or "seren" in _cp or "东雪莲" in _cp or "雪莲" in _cp:
+                _char["prompt"] = f"{_azuma_anchor}, " + str(_char.get("prompt", "") or "").strip(", ")
+                _injected = True
+                break
+        if not _injected:
+            # No matching char entry found — inject into first character as fallback
+            if characters:
+                _first = characters[0]
+                _first["prompt"] = f"{_azuma_anchor}, " + str(_first.get("prompt", "") or "").strip(", ")
     if selfie_mode and not user_mentions_appearance(user_request) and selfie_appearance_policy in {"auto", "never"}:
         global_text, characters = remove_selfie_appearance_from_characters(global_text, characters)
     if enforce_tag_order:
