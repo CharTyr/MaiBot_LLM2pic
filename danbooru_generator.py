@@ -227,7 +227,7 @@ def _postprocess_multi_character_payload(
             remove_persona_appearance=not user_mentions_appearance(user_request),
         )
     elif "azuma_seren" not in global_text.lower() and "character:azuma" not in global_text.lower():
-        global_text = "{{{azuma_seren}}}, " + global_text
+        global_text = "{{{azuma_seren}}}, silver-white twin tails, purple eyes, " + global_text
     if selfie_mode and not user_mentions_appearance(user_request) and selfie_appearance_policy in {"auto", "never"}:
         global_text, characters = remove_selfie_appearance_from_characters(global_text, characters)
     if enforce_tag_order:
@@ -402,7 +402,7 @@ async def generate_danbooru_prompt(
         )
     elif "azuma_seren" not in generated_prompt.lower() and "character:azuma" not in generated_prompt.lower():
         # LLM 未输出角色 tag，强制注入（与 Hermes nai-draw 标准一致）
-        generated_prompt = "{{{azuma_seren}}}, " + generated_prompt
+        generated_prompt = "{{{azuma_seren}}}, silver-white twin tails, purple eyes, " + generated_prompt
     if selfie_mode and not user_mentions_appearance(user_request):
         if selfie_appearance_policy in {"auto", "never"}:
             generated_prompt = remove_selfie_appearance_tags(generated_prompt)
