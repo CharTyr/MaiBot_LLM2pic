@@ -895,7 +895,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         raw_prompt = (matched_groups or {}).get("prompt", "").strip()
         manual_style = (matched_groups or {}).get("style")
         nsfw_allowed = str((matched_groups or {}).get("nsfw", "") or "").strip().lower() == "nsfw"
-        ref_mode = (matched_groups or {}).get("ref", "").strip().lower().replace("-", "_")
+        ref_mode = str((matched_groups or {}).get("ref", "") or "").strip().lower().replace("-", "_")
 
         if not raw_prompt:
             return True, "用法: /pic <prompt> | /pic i2i <prompt> | /pic char-ref <prompt> | /pic vibe <prompt> | /pic nsfw <prompt>", True
