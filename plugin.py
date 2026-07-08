@@ -912,6 +912,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                     raw_prompt=raw_prompt,
                     manual_style=manual_style,
                     nsfw_allowed=nsfw_allowed,
+                    ref_mode=ref_mode,
                     session_message=kwargs.get("message"),
                 )
             )
