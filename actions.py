@@ -1,9 +1,7 @@
-"""draw_picture Tool 元数据。"""
-
-from .image_clients import ImageClientMixin
+"""draw_picture Tool 元数据（纯数据，不继承出图客户端）。"""
 
 
-class DrawPictureToolMetadata(ImageClientMixin):
+class DrawPictureToolMetadata:
     """生成一张图片并发送。"""
 
     tool_description = (

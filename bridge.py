@@ -19,6 +19,7 @@ from .utils import download_image_to_base64, _peel_envelope
 from .style_router import LLMOutputParser, DEFAULT_SYSTEM_PROMPT
 from .actions import DrawPictureToolMetadata
 from .commands import DirectPicCommand
+from .image_clients import ImageClientMixin
 
 from src.common.logger import get_logger
 
@@ -557,7 +558,7 @@ class _RuntimeBridgeMixin:
         return PromptGenerationResult(True, prompt=response_text, style=style)
 
 
-class _ToolRuntimeProxy(DrawPictureToolMetadata):
+class _ToolRuntimeProxy(DrawPictureToolMetadata, ImageClientMixin):
     """承接 Tool 元数据与图片客户端能力，并映射到 rdev ctx。"""
 
     def __init__(
@@ -624,7 +625,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata):
         )
 
 
-class _CommandRuntimeProxy(DirectPicCommand):
+class _CommandRuntimeProxy(DirectPicCommand, ImageClientMixin):
     """承接命令元数据与图片客户端能力，并映射到 rdev ctx。"""
 
     def __init__(
