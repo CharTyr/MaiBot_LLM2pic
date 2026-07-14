@@ -17,7 +17,7 @@ from typing import Any, Optional
 from src.common.logger import get_logger
 
 from .clients.base import GenerationContext, calc_max_tokens
-from .clients.newapi_nai import NewApiNaiClient
+from .clients.factory import create_client_from_model_config
 from .style_router import StyleRouter
 from .generation_service import (
     generate_image,
@@ -260,14 +260,11 @@ async def _generate_with_newapi_nai(
         else:
             gen_ctx.vibe_images = [{"image": ref_image_data_uri, "info_extracted": info_ext, "strength": strength}]
 
-    # 客户端
-    base_url = str(mc.get("base_url", "") or "")
-    api_key = str(mc.get("api_key", "") or "")
-    if not base_url or not api_key:
+    # 客户端（经 factory，统一 ImageClient 接缝）
+    client = create_client_from_model_config(mc, log_prefix=f"[{ctx.source}]")
+    if client is None:
         await _safe_send(ctx, "画图的 base_url 或 API 密钥没配置")
         return False
-
-    client = NewApiNaiClient(base_url=base_url, api_key=api_key, log_prefix=f"[{ctx.source}]")
 
     # 调用
     result = await client.generate(gen_ctx)
