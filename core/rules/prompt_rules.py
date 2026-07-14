@@ -112,6 +112,7 @@ hair / haired / long hair / short hair / medium hair / eyes / eyed / bangs / twi
 - **禁止** `{{{character:AzumaSeren}}}`、`azuma seren`（空格分词）
 - 默认不堆发色瞳色（模型已知）；用户强调外貌或复杂服装导致脸不稳时，可加 `{{{silver-white twin tails}}}`, `{{{purple eyes}}}`，或将角色 tag 升至 `{{{{{azuma_seren}}}}}`（四层）
 - 用户明确要画 OC（绿发蓝眼眼镜娘）→ 不用 `azuma_seren`，用手写外貌 tag（见 custom system_prompt），禁止与东雪莲混用
+- **名字联想禁令**：东雪莲 / Azuma Seren 是角色名，与雪、冬季、雪景无关。禁止因角色名含「雪」而添加 snow / winter / snowflakes / frost / blizzard / snowy background 等冬季环境 tag，除非用户明确要求雪景
 
 </hard_rules>
 """.strip()
