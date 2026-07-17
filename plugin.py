@@ -860,13 +860,36 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         if not _normalize_bool(self._config_get("components.enable_direct_pic_command", True)):
             return True, "图片命令未启用", True
 
-        raw_prompt = (matched_groups or {}).get("prompt", "").strip()
-        manual_style = (matched_groups or {}).get("style")
-        nsfw_allowed = str((matched_groups or {}).get("nsfw", "") or "").strip().lower() == "nsfw"
-        ref_mode = str((matched_groups or {}).get("ref", "") or "").strip().lower().replace("-", "_")
+        # body 优先（新正则）；兼容旧 named groups（nsfw/ref/style/prompt）
+        groups = matched_groups or {}
+        raw_prompt = str(groups.get("body") or groups.get("prompt") or "").strip()
+        manual_style = groups.get("style")
+        nsfw_allowed = str(groups.get("nsfw", "") or "").strip().lower() == "nsfw"
+        ref_mode = str(groups.get("ref", "") or "").strip().lower().replace("-", "_")
+
+        # 任意序前缀：/pic i2i nsfw ...、/pic nsfw i2i anime ...
+        while True:
+            m = re.match(
+                r"^(?P<tok>nsfw|i2i|char-ref|char_ref|vibe|anime|edit)(?:\s+|$)(?P<rest>.*)$",
+                raw_prompt,
+                flags=re.I,
+            )
+            if not m:
+                break
+            tok = m.group("tok").lower().replace("-", "_")
+            raw_prompt = (m.group("rest") or "").strip()
+            if tok == "nsfw":
+                nsfw_allowed = True
+            elif tok in {"i2i", "char_ref", "vibe"}:
+                ref_mode = tok  # 后者覆盖前者（一般只写一个）
+            elif tok in {"anime", "edit"}:
+                manual_style = tok
 
         if not raw_prompt:
-            return True, "用法: /pic <prompt> | /pic i2i <prompt> | /pic char-ref <prompt> | /pic vibe <prompt> | /pic nsfw <prompt>", True
+            return True, (
+                "用法: /pic <prompt> | /pic i2i <prompt> | /pic nsfw i2i <prompt> | "
+                "/pic i2i nsfw <prompt> | /pic char-ref <prompt> | /pic vibe <prompt>"
+            ), True
 
         if not self._try_acquire_generation_lock(plugin_config, stream_id):
             return True, "同一聊天流已有图片生成任务正在进行", True

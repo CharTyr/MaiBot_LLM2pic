@@ -7,13 +7,10 @@ class DirectPicCommand:
     command_name = "direct_pic"
     command_description = (
         "使用自然语言描述生成图片，会先转写为 Danbooru tags。"
-        "可选前缀：nsfw（NSFW模式）、i2i/char-ref/vibe（参考图模式，需附图）、anime/edit（风格）。"
-        "例: /pic i2i 照这个姿势画；支持回复引用图片消息（正文含 /pic 即可）"
+        "可选前缀（顺序任意）：nsfw、i2i/char-ref/vibe、anime/edit。"
+        "例: /pic i2i 照这个姿势画；/pic i2i nsfw ... 与 /pic nsfw i2i ... 均可；"
+        "支持回复引用图片消息（正文含 /pic 即可）"
     )
-    command_pattern = (
-        r"/pic\s+"
-        r"(?:(?P<nsfw>[Nn][Ss][Ff][Ww])\s+)?"
-        r"(?:(?P<ref>i2i|char-ref|char_ref|vibe)\s+)?"
-        r"(?:(?P<style>anime|edit)\s+)?"
-        r"(?P<prompt>.+)$"
-    )
+    # 只抓 /pic 后整段 body；nsfw/ref/style 在 plugin 里任意序解析。
+    # 勿用「多个具名分组 + 量词交替」：Python 会用最后一次交替覆盖，冲掉先前 nsfw。
+    command_pattern = r"/pic\s+(?P<body>.+)$"
