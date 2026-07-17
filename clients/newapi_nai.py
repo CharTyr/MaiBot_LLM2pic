@@ -275,6 +275,14 @@ class NewApiNaiClient(ImageClient):
 
         # 构造内层 payload
         inner = self._build_inner(ctx)
+        if ctx.ref_mode == "i2i":
+            i2i_block = inner.get("i2i") if isinstance(inner, dict) else None
+            logger.info(
+                f"{self.log_prefix} i2i payload: present={bool(i2i_block)}, "
+                f"keys={list(i2i_block.keys()) if isinstance(i2i_block, dict) else None}, "
+                f"image_len={len(i2i_block.get('image', '')) if isinstance(i2i_block, dict) else 0}, "
+                f"strength={(i2i_block or {}).get('strength') if isinstance(i2i_block, dict) else None}"
+            )
 
         # 构造外层 OpenAI 格式
         max_tokens = calc_max_tokens(ctx)
@@ -446,9 +454,12 @@ class NewApiNaiClient(ImageClient):
         }
 
         prompt_preview = ctx.prompt[:200] if ctx.prompt else "(empty)"
+        has_i2i = bool(ctx.ref_mode == "i2i" and ctx.i2i_image)
+        i2i_len = len(ctx.i2i_image) if ctx.i2i_image else 0
         logger.info(
             f"{self.log_prefix} 发起 NAI 请求: model={ctx.model}, "
-            f"ref_mode={ctx.ref_mode}, prompt={prompt_preview}..."
+            f"ref_mode={ctx.ref_mode}, has_i2i={has_i2i}, i2i_image_len={i2i_len}, "
+            f"i2i_strength={getattr(ctx, 'i2i_strength', None)}, prompt={prompt_preview}..."
         )
 
         req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")

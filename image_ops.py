@@ -50,6 +50,66 @@ def sanitize_prompt_for_newapi(prompt: str) -> str:
     return result
 
 
+
+def _load_image_b64_by_hash(image_hash: str) -> Optional[str]:
+    """Command path include_binary_data=False leaves only image hash.
+
+    Recover base64 from data/images or the images table full_path.
+    """
+    import base64
+    from pathlib import Path as _Path
+
+    h = str(image_hash or "").strip()
+    if not h:
+        return None
+    if h.startswith("base64://"):
+        return h[9:]
+    stem = h.split("/")[-1].split(".")[0]
+    if not stem:
+        return None
+
+    candidates: list[_Path] = []
+    for root in (_Path("data/images"), _Path("/root/seren/rdev-Maibot/data/images")):
+        for ext in (".png", ".jpg", ".jpeg", ".webp", ""):
+            candidates.append(root / f"{stem}{ext}")
+        if root.exists():
+            candidates.extend(root.glob(stem + ".*"))
+
+    try:
+        import sqlite3
+
+        for db in (_Path("data/MaiBot.db"), _Path("/root/seren/rdev-Maibot/data/MaiBot.db")):
+            if not db.exists():
+                continue
+            con = sqlite3.connect(str(db))
+            try:
+                row = con.execute(
+                    "SELECT full_path FROM images WHERE image_hash=? LIMIT 1",
+                    (stem,),
+                ).fetchone()
+                if row and row[0]:
+                    candidates.insert(0, _Path(str(row[0])))
+            finally:
+                con.close()
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    for p in candidates:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if p.is_file():
+                raw = p.read_bytes()
+                if raw:
+                    return base64.b64encode(raw).decode("ascii")
+        except Exception:
+            continue
+    return None
+
+
 class ImageOps:
     """出图周边操作：拼 prompt、发图、裁剪、从消息抽图。
 
@@ -84,14 +144,93 @@ class ImageOps:
 
 
     async def _extract_input_image(self) -> Optional[str]:
-        """从当前消息中提取图片，用于图生图。"""
+        """从当前消息中提取图片，用于图生图。
+
+        兼容：
+        - SessionMessage 对象（message_segment / raw_message）
+        - Command RPC 传入的 dict（raw_message 为段列表）
+        注意：Command 路径 include_binary_data=False，同条附图可能只有 URL；
+        引用图请走 pipeline → _ctx_extract_image_from_session_message。
+        """
         try:
             message = getattr(self, "message", None)
             if not message:
                 logger.debug(f"{self.log_prefix} 消息中未找到图片")
                 return None
 
+            # dict 形态
+            if isinstance(message, dict):
+                raw = message.get("raw_message", [])
+                if isinstance(raw, list):
+                    for seg in raw:
+                        if not isinstance(seg, dict) or seg.get("type") != "image":
+                            continue
+                        b64 = seg.get("binary_data_base64") or ""
+                        if isinstance(b64, str) and b64:
+                            return b64
+
+                        # Command serialize often keeps only hash:
+                        # {"type":"image","data":...,"hash":"<sha256>"}
+                        image_hash = str(seg.get("hash") or "").strip()
+                        data = seg.get("data", "")
+                        if not image_hash and isinstance(data, dict):
+                            image_hash = str(
+                                data.get("hash") or data.get("file") or ""
+                            ).strip()
+                        if (
+                            image_hash
+                            and not image_hash.startswith("http")
+                            and not image_hash.startswith("base64://")
+                        ):
+                            local = _load_image_b64_by_hash(image_hash)
+                            if local:
+                                logger.info(
+                                    f"{self.log_prefix} 同条附图经 hash 回捞: "
+                                    f"hash={image_hash[:16]}... b64_len={len(local)}"
+                                )
+                                return local
+
+                        if isinstance(data, dict):
+                            img_url = data.get("url") or data.get("file")
+                            if isinstance(img_url, str) and img_url.startswith("http"):
+                                success, result = await asyncio.to_thread(
+                                    download_image_to_base64, img_url
+                                )
+                                if success:
+                                    return result
+                            if isinstance(img_url, str) and img_url.startswith("base64://"):
+                                return img_url[9:]
+                            maybe_hash = str(
+                                data.get("hash") or data.get("file") or ""
+                            ).strip()
+                            if maybe_hash and not maybe_hash.startswith("http"):
+                                local = _load_image_b64_by_hash(maybe_hash)
+                                if local:
+                                    logger.info(
+                                        f"{self.log_prefix} 同条附图 data.hash 回捞: "
+                                        f"hash={maybe_hash[:16]}... b64_len={len(local)}"
+                                    )
+                                    return local
+                        elif isinstance(data, str):
+                            if data.startswith("base64://"):
+                                return data[9:]
+                            if data.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+                                return data
+                            if data.startswith("http"):
+                                success, result = await asyncio.to_thread(
+                                    download_image_to_base64, data
+                                )
+                                if success:
+                                    return result
+                            if re.fullmatch(r"[0-9a-fA-F]{32,128}", data.strip() or ""):
+                                local = _load_image_b64_by_hash(data.strip())
+                                if local:
+                                    return local
+                logger.debug(f"{self.log_prefix} 消息中未找到图片")
+                return None
+
             if hasattr(message, "message_segment"):
+
                 for seg in message.message_segment:
                     if not hasattr(seg, "type") or seg.type != "image" or not hasattr(seg, "data"):
                         continue

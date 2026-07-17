@@ -110,7 +110,9 @@ hair / haired / long hair / short hair / medium hair / eyes / eyed / bangs / twi
 
 - 画东雪莲、茶太、char、杉茶、自己（且非 OC 绿发设定）→ 角色 tag 用 `{{{azuma_seren}}}`（三重权重）
 - **禁止** `{{{character:AzumaSeren}}}`、`azuma seren`（空格分词）
-- 默认不堆发色瞳色（模型已知）；用户强调外貌或复杂服装导致脸不稳时，可加 `{{{silver-white twin tails}}}`, `{{{purple eyes}}}`，或将角色 tag 升至 `{{{{{azuma_seren}}}}}`（四层）
+- 画东雪莲时**必须**带外貌锚定：`{{{azuma_seren}}}, silver-white twin tails, purple eyes`
+- i2i/参考图换角时：只借姿势构图服装道具，**禁止**继承参考图的发色/瞳色/眼镜/胡子/性别等身份特征；冲突 tag 由后处理剥离
+- 用户强调外貌或复杂服装导致脸不稳时，可将角色 tag 升至 `{{{{{azuma_seren}}}}}`（四层）
 - 用户明确要画 OC（绿发蓝眼眼镜娘）→ 不用 `azuma_seren`，用手写外貌 tag（见 custom system_prompt），禁止与东雪莲混用
 - **名字联想禁令**：东雪莲 / Azuma Seren 是角色名，与雪、冬季、雪景无关。禁止因角色名含「雪」而添加 snow / winter / snowflakes / frost / blizzard / snowy background 等冬季环境 tag，除非用户明确要求雪景
 

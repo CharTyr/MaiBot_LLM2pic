@@ -48,6 +48,43 @@ from .wd14_client import reverse_tag_image, DEFAULT_ENDPOINT as WD14_DEFAULT_END
 
 logger = get_logger("MaiBot_LLM2pic")
 
+
+def _emit_plugin_metric(
+    *,
+    op: str,
+    success: bool,
+    duration_ms: float | None = None,
+    stream_id: str = "",
+    error: str = "",
+    kind: str = "command",
+    **extra: Any,
+) -> None:
+    """Emit a grep-friendly PLUGIN_METRIC line for Mai-Plugin-Ops."""
+    parts = [
+        "PLUGIN_METRIC",
+        "plugin=chartyr.maibot-llm2pic",
+        f"kind={kind}",
+        f"op={op}",
+        f"success={1 if success else 0}",
+    ]
+    if duration_ms is not None:
+        try:
+            parts.append(f"duration_ms={float(duration_ms):.0f}")
+        except (TypeError, ValueError):
+            pass
+    if stream_id:
+        parts.append(f"stream_id={stream_id}")
+    if error:
+        safe = str(error).replace(" ", "_").replace("\n", " ")[:120]
+        parts.append(f"error={safe}")
+    for key, value in extra.items():
+        if value is None or value == "":
+            continue
+        parts.append(f"{key}={value}")
+    logger.info(" ".join(parts))
+
+
+
 _CONFIG_VERSION = "4.2.0"
 
 
@@ -850,6 +887,16 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         except Exception as exc:
             self._release_generation_lock(stream_id)
             logger.error("[DirectPic] 启动 /pic 任务失败: %s", exc, exc_info=True)
+            _emit_plugin_metric(
+                op="direct_pic",
+                success=False,
+                duration_ms=0,
+                stream_id=stream_id,
+                error=str(exc)[:120],
+                kind="command",
+                ref_mode=ref_mode or "none",
+                phase="start",
+            )
             return True, f"/pic 启动失败: {str(exc)[:80]}", True
         return True, None, True
 
@@ -865,6 +912,9 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         session_message: Any = None,
     ) -> None:
         """后台异步处理 /pic 命令（P2 重构：走 pipeline）。"""
+        started = time.perf_counter()
+        success = False
+        error = ""
         try:
             proxy = _CommandRuntimeProxy(
                 self,
@@ -885,14 +935,26 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 proxy=proxy,
                 plugin=self,
             )
-            await run_draw_pipeline(ctx)
+            success = bool(await run_draw_pipeline(ctx))
+            if not success:
+                error = "pipeline_failed"
         except Exception as exc:
+            error = str(exc)[:120]
             logger.error("[LLM2PicPlugin] /pic 后台任务异常: %s", exc, exc_info=True)
             try:
                 await self._ctx_send_text(f"/pic 出错了: {str(exc)[:80]}", stream_id)
             except Exception:
                 pass
         finally:
+            _emit_plugin_metric(
+                op="direct_pic",
+                success=success,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                stream_id=stream_id,
+                error=error,
+                kind="command",
+                ref_mode=ref_mode or "none",
+            )
             self._release_generation_lock(stream_id)
 def create_plugin() -> LLM2PicPlugin:
     """rdev Runner 原生插件工厂。"""

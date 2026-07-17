@@ -54,6 +54,7 @@ class DrawPipelineContext:
     proxy: Any = None       # _ToolRuntimeProxy 或 _CommandRuntimeProxy
     plugin: Any = None      # LLM2PicPlugin 引用（用于 _ctx_extract_image_from_recent）
     session_message: Any = None
+    ref_extract_error: str = ""
 
 
 def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> str:
@@ -82,18 +83,78 @@ def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> st
 
 
 async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
-    """从当前消息或引用消息中提取附图 base64。"""
+    """从当前消息 / 当前消息引用 / 最近消息中提取附图 base64。
+
+    优先级（i2i 正确性关键）：
+    1. 当前消息自身 image 段（同条消息附图）
+    2. 当前消息 reply_to / reply 段（用户「回复图片 + /pic i2i」）
+    3. 最近 5 分钟消息里的图（仅无 ref_mode 且无显式引用时兜底）
+
+    铁律：
+    - 用户显式引用了消息时，禁止 silent recent_fallback。
+    - i2i/char_ref/vibe 必须用到「当前图或引用图」；引用目标失效时直接失败，
+      不要偷偷拿 bot 刚出的图冒充参考图。
+    """
     try:
-        # 1. 先从当前消息的图片段提取（直接发的图）
+        strict_ref = bool(ctx.ref_mode)
+        session_message = getattr(ctx.proxy, "message", None) if ctx.proxy is not None else None
+        if session_message is None:
+            session_message = ctx.session_message
+
+        # 1. 当前消息自身 image 段（Command proxy 可能是 dict，也可能 object）
         if ctx.source == "direct_pic" and ctx.proxy is not None:
             img = await ctx.proxy._extract_input_image()
             if img:
+                logger.info("[Pipeline] 附图来源=current_message_image b64_len=%s", len(img))
                 return img
-        # 2. 再从引用消息中提取（引用了别人的图）
-        if ctx.plugin is not None:
+
+        # 2. 当前命令消息的 reply_to / reply 段（显式引用）
+        if ctx.plugin is not None and session_message is not None:
+            ref_info = await ctx.plugin._ctx_resolve_session_reference(
+                session_message, ctx.stream_id
+            )
+            img = ref_info.get("image")
+            reply_to = ref_info.get("reply_to") or ""
+            if img:
+                logger.info(
+                    "[Pipeline] 附图来源=%s reply_to=%s b64_len=%s",
+                    ref_info.get("source") or "session_message_reply_or_self",
+                    reply_to or "-",
+                    len(img),
+                )
+                return img
+            if reply_to:
+                # 用户明确引用了某条消息，但取不到图：禁止 recent 兜底
+                reason = ref_info.get("error") or "引用消息无法访问或不含图片"
+                logger.error(
+                    "[Pipeline] 显式引用取图失败: reply_to=%s reason=%s strict_ref=%s",
+                    reply_to,
+                    reason,
+                    strict_ref,
+                )
+                if strict_ref:
+                    ctx.ref_extract_error = (
+                        f"引用消息已失效或取不到图片（reply_to={reply_to}）。"
+                        f"请重新回复那张参考图后再 /pic {ctx.ref_mode}"
+                    )
+                return None
+
+        # 3. 兜底：最近消息扫描
+        # - 有 ref_mode：禁止（必须显式附图/引用，避免捞到 bot 刚出的图）
+        # - 无 ref_mode：允许给 WD14 增强用
+        if ctx.plugin is not None and not strict_ref:
             img = await ctx.plugin._ctx_extract_image_from_recent(ctx.stream_id)
             if img:
+                logger.warning(
+                    "[Pipeline] 附图来源=recent_fallback（无显式引用，可能不是用户想要的图） b64_len=%s",
+                    len(img),
+                )
                 return img
+        elif strict_ref:
+            logger.warning(
+                "[Pipeline] ref_mode=%s 未找到当前图/引用图，跳过 recent_fallback",
+                ctx.ref_mode,
+            )
     except Exception as exc:
         logger.warning("[Pipeline] 提取附图失败: %s", exc)
     return None
@@ -108,11 +169,24 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
         if ctx.ref_mode:
             attachment_b64 = await _extract_attachment(ctx)
             if not attachment_b64:
-                await _safe_send(ctx, f"指定了 {ctx.ref_mode} 模式但没检测到附图，按普通文生图处理")
-                ctx.ref_mode = ""
+                err = str(getattr(ctx, "ref_extract_error", "") or "").strip()
+                logger.warning(
+                    "[Pipeline] ref_mode=%s 但未提取到附图（current/reply 失败，已禁止 recent 兜底） err=%s",
+                    ctx.ref_mode,
+                    err or "-",
+                )
+                if err:
+                    await _safe_send(ctx, err)
+                else:
+                    await _safe_send(
+                        ctx,
+                        f"指定了 {ctx.ref_mode} 但没检测到参考图。请「回复引用那张图」或同条附图后再发 /pic {ctx.ref_mode}",
+                    )
+                # 显式参考图模式失败：直接中止，禁止降级文生图 / recent 兜底
+                return False
 
-        # 也检测无 ref_mode 时的附图（用于 WD14 tag 增强）
-        if not attachment_b64:
+        # 无 ref_mode 时才扫附图（用于 WD14 tag 增强）；允许 recent_fallback
+        if not ctx.ref_mode and not attachment_b64:
             attachment_b64 = await _extract_attachment(ctx)
 
         # ── 2. WD14 反推（有附图时都做）──
@@ -242,6 +316,13 @@ async def _generate_with_newapi_nai(
         gen_ctx.i2i_image = ref_image_data_uri
         gen_ctx.i2i_strength = float(ref_cfg.get("i2i_strength", 0.7) or 0.7)
         gen_ctx.i2i_noise = float(ref_cfg.get("i2i_noise", 0.0) or 0.0)
+        logger.info(
+            "[Pipeline] i2i 已绑定参考图: uri_len=%s strength=%s noise=%s size=%s",
+            len(ref_image_data_uri),
+            gen_ctx.i2i_strength,
+            gen_ctx.i2i_noise,
+            target_size,
+        )
     elif ctx.ref_mode == "char_ref" and ref_image_data_uri:
         gen_ctx.char_ref_image = ref_image_data_uri
         gen_ctx.char_ref_type = str(ref_cfg.get("char_ref_type", "character") or "character")

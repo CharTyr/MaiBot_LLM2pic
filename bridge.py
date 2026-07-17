@@ -272,16 +272,36 @@ class _RuntimeBridgeMixin:
                 logger.warning("[LLM2picBridge] 检查模型 %s 视觉能力失败: %s", model_name, exc)
 
         if use_image and image_base64:
-            # Use message_factory to include image in the request
-            from src.llm_models.utils_model import TempMethodsLLMUtils
+            # Host LLMServiceClient 正确视觉入口：
+            # - generate_response_with_messages(message_factory, options=LLMGenerationOptions)
+            # - 或 generate_response_for_image(prompt, image_base64, image_format, options)
+            # 旧代码误调 generate_response_with_message_async（不存在）→ 必炸降级纯文本
+            from src.common.data_models.llm_service_data_models import LLMGenerationOptions
             from src.llm_models.payload_content.message import MessageBuilder
+
+            raw_b64 = str(image_base64 or "")
+            image_format = "jpeg"
+            if raw_b64.startswith("data:"):
+                # data:image/png;base64,xxxx
+                header, _, payload = raw_b64.partition(",")
+                raw_b64 = payload or raw_b64
+                if "image/png" in header:
+                    image_format = "png"
+                elif "image/webp" in header:
+                    image_format = "webp"
+                elif "image/gif" in header:
+                    image_format = "gif"
+                else:
+                    image_format = "jpeg"
+            elif raw_b64.startswith("iVBORw"):
+                image_format = "png"
 
             def message_factory(client) -> list:
                 builder = MessageBuilder()
                 builder.add_text_content(str(prompt or ""))
                 builder.add_image_content(
-                    image_base64=image_base64,
-                    image_format="jpeg",
+                    image_base64=raw_b64,
+                    image_format=image_format,
                     support_formats=client.get_support_image_formats(),
                 )
                 return [builder.build()]
@@ -291,11 +311,19 @@ class _RuntimeBridgeMixin:
                 request_type=f"plugin.{getattr(self, 'plugin_id', 'chartyr.maibot-llm2pic')}",
             )
             try:
-                generation_result = await llm_client.generate_response_with_message_async(
-                    message_factory=message_factory,
+                options = LLMGenerationOptions(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     model_name=model_name,
+                )
+                generation_result = await llm_client.generate_response_with_messages(
+                    message_factory=message_factory,
+                    options=options,
+                )
+                logger.info(
+                    "[LLM2picBridge] 视觉直连成功: model=%s resp_len=%s",
+                    getattr(generation_result, "model_name", model_name),
+                    len(str(getattr(generation_result, "response", "") or "")),
                 )
                 return generation_result.to_capability_payload() if hasattr(generation_result, "to_capability_payload") else {
                     "success": bool(generation_result.response),
@@ -322,12 +350,150 @@ class _RuntimeBridgeMixin:
         )
         return result.to_capability_payload()
 
-    async def _ctx_extract_image_from_recent(self, stream_id: str) -> Optional[str]:
-        """从最近的聊天消息中提取图片（用于 edit 模式）。
+    def _ctx_collect_reply_targets(self, session_message: Any) -> list[str]:
+        """收集当前命令消息上的显式引用 id（reply_to 字段 + reply 段）。"""
+        targets: list[str] = []
 
-        优先查找最近一条包含图片的消息，支持：
-        1. 消息本身包含图片
-        2. 消息引用了一条包含图片的消息（通过 message.get_by_id 获取）
+        def _add(value: Any) -> None:
+            text = str(value or "").strip()
+            if text and text not in targets:
+                targets.append(text)
+
+        if not session_message:
+            return targets
+
+        if isinstance(session_message, dict):
+            _add(session_message.get("reply_to"))
+            raw = session_message.get("raw_message", [])
+            if isinstance(raw, list):
+                for seg in raw:
+                    if not isinstance(seg, dict) or seg.get("type") != "reply":
+                        continue
+                    seg_data = seg.get("data", {})
+                    if isinstance(seg_data, dict):
+                        _add(
+                            seg_data.get("target_message_id")
+                            or seg_data.get("id")
+                            or seg_data.get("message_id")
+                        )
+                    elif isinstance(seg_data, str):
+                        _add(seg_data)
+            return targets
+
+        _add(getattr(session_message, "reply_to", None))
+        raw_obj = getattr(session_message, "raw_message", None)
+        if raw_obj is None:
+            return targets
+        try:
+            if isinstance(raw_obj, list):
+                segs = raw_obj
+            else:
+                from src.plugin_runtime.host.message_utils import PluginMessageUtils
+                segs = PluginMessageUtils._message_sequence_to_dict(raw_obj, include_binary_data=False)
+            if isinstance(segs, list):
+                for seg in segs:
+                    if not isinstance(seg, dict) or seg.get("type") != "reply":
+                        continue
+                    seg_data = seg.get("data", {})
+                    if isinstance(seg_data, dict):
+                        _add(seg_data.get("target_message_id") or seg_data.get("id") or seg_data.get("message_id"))
+                    elif isinstance(seg_data, str):
+                        _add(seg_data)
+        except Exception as exc:
+            logger.debug("[LLM2picBridge] 收集 reply 目标失败: %s", exc)
+        return targets
+
+    async def _ctx_resolve_session_reference(
+        self, session_message: Any, stream_id: str = ""
+    ) -> dict[str, Any]:
+        """解析当前命令消息上的参考图，并报告显式引用是否失效。
+
+        返回:
+          image: base64 或 None
+          source: current_message_image / reply_to / reply_seg / None
+          reply_to: 显式引用 id（若有）
+          error: 取图失败原因
+        """
+        info: dict[str, Any] = {
+            "image": None,
+            "source": None,
+            "reply_to": "",
+            "error": "",
+        }
+        if not session_message:
+            return info
+
+        # 1) 当前消息自身图片
+        if isinstance(session_message, dict):
+            raw = session_message.get("raw_message", [])
+            if isinstance(raw, list):
+                img = self._extract_image_from_segments(raw)
+                if img:
+                    info["image"] = img
+                    info["source"] = "current_message_image"
+                    logger.info("[LLM2picBridge] 当前消息自身含图 (dict), b64_len=%s", len(img))
+                    return info
+        else:
+            raw_obj = getattr(session_message, "raw_message", None)
+            if raw_obj is not None:
+                try:
+                    if isinstance(raw_obj, list):
+                        segs = raw_obj
+                    else:
+                        from src.plugin_runtime.host.message_utils import PluginMessageUtils
+                        segs = PluginMessageUtils._message_sequence_to_dict(
+                            raw_obj, include_binary_data=True
+                        )
+                    if isinstance(segs, list):
+                        img = self._extract_image_from_segments(segs)
+                        if img:
+                            info["image"] = img
+                            info["source"] = "current_message_image"
+                            logger.info("[LLM2picBridge] 当前消息自身含图 (obj), b64_len=%s", len(img))
+                            return info
+                except Exception as exc:
+                    logger.debug("[LLM2picBridge] 解析 session_message.raw_message 失败: %s", exc)
+
+        # 2) 显式引用
+        targets = self._ctx_collect_reply_targets(session_message)
+        if targets:
+            info["reply_to"] = targets[0]
+        for target in targets:
+            img = await self._ctx_get_image_by_message_id(str(target), stream_id)
+            if img:
+                info["image"] = img
+                info["source"] = "reply_to"
+                info["reply_to"] = str(target)
+                logger.info(
+                    "[LLM2picBridge] 从当前消息 reply_to 取到参考图: reply_to=%s b64_len=%s",
+                    target,
+                    len(img),
+                )
+                return info
+            logger.warning(
+                "[LLM2picBridge] 显式引用取图失败: reply_to=%s stream_id=%s",
+                target,
+                stream_id,
+            )
+
+        if targets:
+            info["error"] = (
+                f"引用消息无法访问或不含图片（reply_to={targets[0]}）。"
+                "原消息可能已被撤回/未入库/协议层失效"
+            )
+        return info
+
+    async def _ctx_extract_image_from_session_message(self, session_message: Any, stream_id: str = "") -> Optional[str]:
+        """兼容旧调用：只返回图片 base64。"""
+        info = await self._ctx_resolve_session_reference(session_message, stream_id)
+        return info.get("image")
+
+
+    async def _ctx_extract_image_from_recent(self, stream_id: str) -> Optional[str]:
+        """从最近的聊天消息中提取图片（兜底，用于 edit / 无显式引用时）。
+
+        注意：/pic i2i 引用图应优先走 _ctx_extract_image_from_session_message，
+        本函数会从最新消息向前扫，容易拿到 bot 刚出的图而不是用户引用的图。
 
         Returns:
             Optional[str]: 图片的 base64 数据，如果没有找到则返回 None
@@ -368,6 +534,12 @@ class _RuntimeBridgeMixin:
             # 1. 检查消息本身是否包含图片
             image_base64 = self._extract_image_from_segments(raw_message)
             if image_base64:
+                mid = msg.get("message_id") or msg.get("id") or "?"
+                logger.info(
+                    "[LLM2picBridge] recent 命中消息自身图片: message_id=%s b64_len=%s",
+                    mid,
+                    len(image_base64),
+                )
                 return image_base64
 
             # 2. 检查消息是否引用了另一条消息，尝试获取引用消息中的图片
@@ -375,6 +547,11 @@ class _RuntimeBridgeMixin:
             if reply_to:
                 reply_image = await self._ctx_get_image_by_message_id(reply_to, stream_id)
                 if reply_image:
+                    logger.info(
+                        "[LLM2picBridge] recent 命中消息 reply_to 图片: reply_to=%s b64_len=%s",
+                        reply_to,
+                        len(reply_image),
+                    )
                     return reply_image
 
             # 也检查 raw_message 中的 reply 段
@@ -405,42 +582,152 @@ class _RuntimeBridgeMixin:
                 include_binary_data=True,
             )
         except Exception as exc:
-            logger.debug("[LLM2picBridge] 获取引用消息失败: %s", exc)
+            logger.warning("[LLM2picBridge] 获取引用消息异常: message_id=%s err=%s", message_id, exc)
             return None
 
         if not isinstance(result, dict):
+            logger.warning("[LLM2picBridge] 获取引用消息返回非 dict: message_id=%s type=%s", message_id, type(result))
+            return None
+        if result.get("success") is False:
+            logger.warning(
+                "[LLM2picBridge] 获取引用消息失败: message_id=%s error=%s",
+                message_id,
+                result.get("error"),
+            )
             return None
         msg = result.get("message") if "message" in result else result
-        if not isinstance(msg, dict):
+        if not isinstance(msg, dict) or not msg:
+            logger.warning("[LLM2picBridge] 引用消息不存在/空: message_id=%s stream_id=%s", message_id, stream_id)
             return None
 
         raw_message = msg.get("raw_message", [])
         if not isinstance(raw_message, list):
+            logger.warning("[LLM2picBridge] 引用消息 raw_message 非列表: message_id=%s", message_id)
             return None
 
-        return self._extract_image_from_segments(raw_message)
+        img = self._extract_image_from_segments(raw_message)
+        if not img:
+            # 也尝试 hash 路径：仅有 hash 时从本地 images 读
+            for seg in raw_message:
+                if not isinstance(seg, dict) or seg.get("type") != "image":
+                    continue
+                data = seg.get("data", {})
+                image_hash = ""
+                if isinstance(data, dict):
+                    image_hash = str(data.get("hash") or data.get("file") or "").strip()
+                if image_hash:
+                    local = self._load_image_b64_by_hash(image_hash)
+                    if local:
+                        logger.info(
+                            "[LLM2picBridge] 引用消息经 hash 取图: message_id=%s hash=%s b64_len=%s",
+                            message_id,
+                            image_hash[:16],
+                            len(local),
+                        )
+                        return local
+            logger.warning(
+                "[LLM2picBridge] 引用消息存在但不含可解码图片: message_id=%s segs=%s",
+                message_id,
+                [s.get("type") if isinstance(s, dict) else type(s).__name__ for s in raw_message[:8]],
+            )
+        return img
 
-    @staticmethod
-    def _extract_image_from_segments(segments: list) -> Optional[str]:
-        """从消息段列表中提取第一张图片的 base64 数据。"""
+
+    def _load_image_b64_by_hash(self, image_hash: str) -> Optional[str]:
+        """从 data/images / images 表按 hash 读图。"""
+        import base64
+        from pathlib import Path as _Path
+
+        h = str(image_hash or "").strip()
+        if not h:
+            return None
+        stem = h.split("/")[-1].split(".")[0]
+        if not stem:
+            return None
+
+        candidates: list[_Path] = []
+        for root in (_Path("data/images"), _Path("/root/seren/rdev-Maibot/data/images")):
+            for ext in (".png", ".jpg", ".jpeg", ".webp", ""):
+                candidates.append(root / f"{stem}{ext}")
+            if root.exists():
+                candidates.extend(root.glob(stem + ".*"))
+        try:
+            import sqlite3
+
+            for db in (_Path("data/MaiBot.db"), _Path("/root/seren/rdev-Maibot/data/MaiBot.db")):
+                if not db.exists():
+                    continue
+                con = sqlite3.connect(str(db))
+                try:
+                    row = con.execute(
+                        "SELECT full_path FROM images WHERE image_hash=? LIMIT 1",
+                        (stem,),
+                    ).fetchone()
+                    if row and row[0]:
+                        candidates.insert(0, _Path(str(row[0])))
+                finally:
+                    con.close()
+        except Exception:
+            pass
+
+        seen: set[str] = set()
+        for p in candidates:
+            key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if p.is_file():
+                    raw = p.read_bytes()
+                    if raw:
+                        return base64.b64encode(raw).decode("ascii")
+            except Exception:
+                continue
+        return None
+
+    def _extract_image_from_segments(self, segments: list) -> Optional[str]:
+        """从消息段列表中提取第一张图片的 base64 数据。支持 hash-only 段。"""
         for seg in segments:
             if not isinstance(seg, dict):
                 continue
             if seg.get("type") != "image":
                 continue
-            # 优先使用 binary_data_base64
             b64 = seg.get("binary_data_base64", "")
             if b64:
                 return b64
-            # 其次尝试 data 字段（可能是 base64）
+
+            image_hash = str(seg.get("hash") or "").strip()
             data = seg.get("data", "")
-            if isinstance(data, str) and data.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
-                return data
-            # 如果 data 是 URL，同步下载（兜底）
-            if isinstance(data, str) and data.startswith("http"):
-                success, result = download_image_to_base64(data)
-                if success:
-                    return result
+            if not image_hash and isinstance(data, dict):
+                image_hash = str(data.get("hash") or data.get("file") or "").strip()
+            if (
+                image_hash
+                and not image_hash.startswith("http")
+                and not image_hash.startswith("base64://")
+            ):
+                local = self._load_image_b64_by_hash(image_hash)
+                if local:
+                    return local
+
+            if isinstance(data, str):
+                if data.startswith(("iVBORw", "/9j/", "UklGR", "R0lGOD")):
+                    return data
+                if data.startswith("base64://"):
+                    return data[9:]
+                if data.startswith("http"):
+                    success, result = download_image_to_base64(data)
+                    if success:
+                        return result
+                if re.fullmatch(r"[0-9a-fA-F]{32,128}", data.strip() or ""):
+                    local = self._load_image_b64_by_hash(data.strip())
+                    if local:
+                        return local
+            elif isinstance(data, dict):
+                img_url = data.get("url") or data.get("file")
+                if isinstance(img_url, str) and img_url.startswith("http"):
+                    success, result = download_image_to_base64(img_url)
+                    if success:
+                        return result
         return None
 
     @staticmethod

@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
+AZUMA_SEREN_ANCHOR = "{{{azuma_seren}}}, silver-white twin tails, purple eyes"
+
 
 _COUNT_RE = re.compile(r"^(?:solo|\d+girls|\d+boys|\d+people|1girl|1boy)$", re.IGNORECASE)
 _YEAR_RE = re.compile(r"^year\s+\d{4}$", re.IGNORECASE)
@@ -606,3 +608,116 @@ def remove_self_character_from_characters(
             remove_persona_appearance=remove_persona_appearance,
         ),
     )
+
+
+def ensure_azuma_seren_appearance_anchor(prompt: str) -> str:
+    """Force Seren identity tags for self-character draws.
+
+    `{{{azuma_seren}}}` alone is weak on i2i (reference image identity leaks).
+    Always keep silver-white twin tails + purple eyes next to the character tag.
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return f"{AZUMA_SEREN_ANCHOR}"
+    lower = text.lower()
+    has_char = "azuma_seren" in lower or "character:azuma" in lower
+    has_hair = (
+        "silver-white twin tails" in lower
+        or "silver white twin tails" in lower
+        or "white twin tails" in lower
+        or "twin tails" in lower and ("silver-white" in lower or "silver white" in lower or "white hair" in lower)
+    )
+    has_eyes = "purple eyes" in lower
+    if has_char and has_hair and has_eyes:
+        return text
+    # Strip weak/partial anchors then prefix canonical block
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    filtered: list[str] = []
+    for p in parts:
+        pl = p.lower()
+        if "azuma_seren" in pl or "character:azuma" in pl:
+            continue
+        if pl in {"silver-white twin tails", "silver white twin tails", "purple eyes", "white hair", "{{{white hair}}}", "{{{silver-white twin tails}}}", "{{{purple eyes}}}"}:
+            continue
+        filtered.append(p)
+    return f"{AZUMA_SEREN_ANCHOR}, " + ", ".join(filtered)
+
+
+def strip_conflicting_identity_tags_for_seren(prompt: str) -> str:
+    """Remove reference-leaked identity tags that fight Seren appearance."""
+    text = str(prompt or "")
+    if not text:
+        return text
+    # only meaningful when drawing seren
+    if "azuma_seren" not in text.lower() and "character:azuma" not in text.lower():
+        return text
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    kept: list[str] = []
+    conflict_re = re.compile(
+        r"(" + r"|".join(
+            [
+                r"black[ _-]?hair",
+                r"brown[ _-]?hair",
+                r"blonde[ _-]?hair",
+                r"blue[ _-]?hair",
+                r"pink[ _-]?hair",
+                r"green[ _-]?hair",
+                r"red[ _-]?hair",
+                r"yellow[ _-]?hair",
+                r"orange[ _-]?hair",
+                r"grey[ _-]?hair",
+                r"gray[ _-]?hair",
+                r"purple[ _-]?hair",
+                r"short[ _-]?hair",
+                r"bob[ _-]?cut",
+                r"twin[ _-]?braids?",
+                r"single[ _-]?braid",
+                r"long[ _-]?braid",
+                r"braided[ _-]?hair",
+                r"\bponytail\b",
+                r"side[ _-]?ponytail",
+                r"\bbun\b",
+                r"double[ _-]?bun",
+                r"hime[ _-]?cut",
+                r"\bbald\b",
+                r"buzz[ _-]?cut",
+                r"facial[ _-]?hair",
+                r"\bbeard\b",
+                r"fake[ _-]?beard",
+                r"\bmustache\b",
+                r"\bstubble\b",
+                r"\bgoatee\b",
+                r"\b1boy\b",
+                r"male[ _-]?focus",
+                r"\bglasses\b",
+                r"round[ _-]?eyewear",
+                r"black-framed[ _-]?eyewear",
+                r"\beyewear\b",
+                r"\bsunglasses\b",
+                r"\bgoggles\b",
+                r"gas[ _-]?mask",
+                r"covered[ _-]?face",
+                r"\bmask\b",
+                r"\bhelmet\b",
+                r"\bturban\b",
+                r"white[ _-]?turban",
+                r"dark[ _-]?skin",
+                r"very[ _-]?dark[ _-]?skin",
+                r"monochrome",
+                r"greyscale",
+                r"grayscale",
+            ]
+        ) + r")",
+        re.I,
+    )
+    for p in parts:
+        # keep seren anchors always
+        pl = p.lower()
+        if "azuma_seren" in pl or "silver-white twin tails" in pl or "purple eyes" in pl:
+            kept.append(p)
+            continue
+        if conflict_re.search(p):
+            continue
+        kept.append(p)
+    return ", ".join(kept)
+

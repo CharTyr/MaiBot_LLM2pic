@@ -22,6 +22,8 @@ from .core.utils.prompt_postprocessor import (
     normalize_prompt_order,
     remove_self_character_from_characters,
     remove_self_character_tags,
+    ensure_azuma_seren_appearance_anchor,
+    strip_conflicting_identity_tags_for_seren,
     remove_selfie_appearance_from_characters,
     remove_selfie_appearance_tags,
     sanitize_sfw_characters,
@@ -226,21 +228,27 @@ def _postprocess_multi_character_payload(
             characters,
             remove_persona_appearance=not user_mentions_appearance(user_request),
         )
-    elif "azuma_seren" not in global_text.lower() and "character:azuma" not in global_text.lower():
-        # Multi-character: inject azuma_seren + appearance into the matching character entry, not global
+    else:
+        # Multi-character self draw: inject/refresh Seren anchors on the matching character entry.
         _azuma_anchor = "{{{azuma_seren}}}, silver-white twin tails, purple eyes"
         _injected = False
         for _ci, _char in enumerate(characters):
             _cp = str(_char.get("prompt", "") or "").lower()
             if "azuma" in _cp or "seren" in _cp or "东雪莲" in _cp or "雪莲" in _cp:
-                _char["prompt"] = f"{_azuma_anchor}, " + str(_char.get("prompt", "") or "").strip(", ")
+                _raw = str(_char.get("prompt", "") or "")
+                _raw = strip_conflicting_identity_tags_for_seren(
+                    _raw if "azuma_seren" in _raw.lower() else f"{_azuma_anchor}, {_raw}"
+                )
+                _char["prompt"] = ensure_azuma_seren_appearance_anchor(_raw)
                 _injected = True
                 break
         if not _injected:
-            # No matching char entry found — inject into first character as fallback
             if characters:
                 _first = characters[0]
-                _first["prompt"] = f"{_azuma_anchor}, " + str(_first.get("prompt", "") or "").strip(", ")
+                _raw = str(_first.get("prompt", "") or "")
+                _first["prompt"] = ensure_azuma_seren_appearance_anchor(
+                    strip_conflicting_identity_tags_for_seren(f"{_azuma_anchor}, {_raw}")
+                )
     if selfie_mode and not user_mentions_appearance(user_request) and selfie_appearance_policy in {"auto", "never"}:
         global_text, characters = remove_selfie_appearance_from_characters(global_text, characters)
     if enforce_tag_order:
@@ -413,9 +421,11 @@ async def generate_danbooru_prompt(
             generated_prompt,
             remove_persona_appearance=not user_mentions_appearance(user_request),
         )
-    elif "azuma_seren" not in generated_prompt.lower() and "character:azuma" not in generated_prompt.lower():
-        # LLM 未输出角色 tag，强制注入（与 Hermes nai-draw 标准一致）
-        generated_prompt = "{{{azuma_seren}}}, silver-white twin tails, purple eyes, " + generated_prompt
+    else:
+        # 画东雪莲：强制角色 + 发色瞳色锚定。
+        # i2i/WD14 常从参考图带回 black hair/glasses/1boy 等冲突身份 tag，必须先剥离再锚定。
+        generated_prompt = strip_conflicting_identity_tags_for_seren(generated_prompt)
+        generated_prompt = ensure_azuma_seren_appearance_anchor(generated_prompt)
     if selfie_mode and not user_mentions_appearance(user_request):
         if selfie_appearance_policy in {"auto", "never"}:
             generated_prompt = remove_selfie_appearance_tags(generated_prompt)
