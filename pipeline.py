@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from src.common.logger import get_logger
 
-from .clients.base import GenerationContext, calc_max_tokens
+from .clients.base import GenerationContext
 from .clients.factory import create_client_from_model_config
 from .style_router import StyleRouter
 from .generation_service import (

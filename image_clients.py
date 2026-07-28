@@ -17,7 +17,7 @@ import zipfile
 from src.common.logger import get_logger
 
 from .github_uploader import upload_image_to_github
-from .image_ops import ImageOps, sanitize_prompt_for_newapi as _sanitize_prompt_for_newapi_ops
+from .image_ops import ImageOps
 from .utils import (
     _compress_image_if_needed,
     _looks_like_image_bytes,

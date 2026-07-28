@@ -193,7 +193,7 @@ class NewApiNaiEndpointConfig(PluginConfigBase):
     scale: float = Field(default=5, description="提示词引导强度")
     sampler: str = Field(default="k_euler_ancestral", description="采样器")
     seed: int = Field(default=-1, description="随机种子，-1 表示随机")
-    image_format: Literal["png", "webp"] = Field(default="png", description="API 返回 png 或 webp。")
+    image_format: Literal["png"] = Field(default="png", description="API 只接受 png。")
     max_tokens: int = Field(default=100000, ge=1, description="NewAPI 计费/预算相关上限，按网关说明填写。")
     timeout: int = Field(default=180, ge=1, description="请求超时时间（秒）")
     retry_attempts: int = Field(default=3, ge=1, le=5, description="限流或短暂故障时的自动重试次数。")

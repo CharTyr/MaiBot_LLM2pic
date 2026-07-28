@@ -29,7 +29,7 @@ class GenerationContext:
     scale: float = 5.0
     sampler: str = "k_euler_ancestral"
     seed: int = -1              # -1 = 随机
-    image_format: str = "png"   # png | webp
+    image_format: str = "png"   # png only (API rejects other values)
 
     # ── 高级参数（NAI 4/4.5）──
     variety_boost: bool = False

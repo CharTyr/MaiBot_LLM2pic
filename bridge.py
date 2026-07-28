@@ -700,58 +700,6 @@ class _RuntimeBridgeMixin:
         return None
 
 
-    def _load_image_b64_by_hash(self, image_hash: str) -> Optional[str]:
-        """从 data/images / images 表按 hash 读图。"""
-        import base64
-        from pathlib import Path as _Path
-
-        h = str(image_hash or "").strip()
-        if not h:
-            return None
-        stem = h.split("/")[-1].split(".")[0]
-        if not stem:
-            return None
-
-        candidates: list[_Path] = []
-        for root in (_Path("data/images"), _Path("/root/seren/rdev-Maibot/data/images")):
-            for ext in (".png", ".jpg", ".jpeg", ".webp", ""):
-                candidates.append(root / f"{stem}{ext}")
-            if root.exists():
-                candidates.extend(root.glob(stem + ".*"))
-        try:
-            import sqlite3
-
-            for db in (_Path("data/MaiBot.db"), _Path("/root/seren/rdev-Maibot/data/MaiBot.db")):
-                if not db.exists():
-                    continue
-                con = sqlite3.connect(str(db))
-                try:
-                    row = con.execute(
-                        "SELECT full_path FROM images WHERE image_hash=? LIMIT 1",
-                        (stem,),
-                    ).fetchone()
-                    if row and row[0]:
-                        candidates.insert(0, _Path(str(row[0])))
-                finally:
-                    con.close()
-        except Exception:
-            pass
-
-        seen: set[str] = set()
-        for p in candidates:
-            key = str(p)
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                if p.is_file():
-                    raw = p.read_bytes()
-                    if raw:
-                        return base64.b64encode(raw).decode("ascii")
-            except Exception:
-                continue
-        return None
-
     def _extract_image_from_segments(self, segments: list) -> Optional[str]:
         """从消息段列表中提取第一张图片的 base64 数据。支持 hash-only 段。"""
         for seg in segments:
