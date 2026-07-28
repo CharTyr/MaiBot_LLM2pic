@@ -260,9 +260,16 @@ class NewApiNaiClient(ImageClient):
     内层 payload 作为 JSON 字符串放在 messages[0].content。
     """
 
-    def __init__(self, base_url: str, api_key: str, log_prefix: str = "[NAI]"):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        api_key_paid: str = "",
+        log_prefix: str = "[NAI]",
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.api_key_paid = api_key_paid
         self.log_prefix = log_prefix
 
     async def generate(self, ctx: GenerationContext) -> GenerationResult:
@@ -284,8 +291,13 @@ class NewApiNaiClient(ImageClient):
                 f"strength={(i2i_block or {}).get('strength') if isinstance(i2i_block, dict) else None}"
             )
 
-        # 构造外层 OpenAI 格式
-        max_tokens = calc_max_tokens(ctx)
+        # 参考图模式的计费预算不能依赖旧进程里的默认值。
+        if ctx.ref_mode == "char_ref":
+            max_tokens = 60000
+        elif ctx.ref_mode == "vibe":
+            max_tokens = 40000
+        else:
+            max_tokens = ctx.max_tokens
         payload = {
             "model": ctx.model,
             "messages": [{"role": "user", "content": json.dumps(inner, ensure_ascii=False)}],
@@ -383,16 +395,13 @@ class NewApiNaiClient(ImageClient):
         if ctx.noise_schedule:
             inner["noise_schedule"] = ctx.noise_schedule
         if ctx.quality_toggle:
-            inner["qualityToggle"] = True
-        if ctx.auto_smea:
-            inner["autoSmea"] = True
+            inner["quality"] = True
 
         # 多角色
         normalized_chars = normalize_characters(ctx.characters)
         if normalized_chars and supports_multi_char(ctx.model):
             inner["characters"] = normalized_chars
             inner["use_coords"] = all("position" in item for item in normalized_chars)
-            inner["use_order"] = True
         elif normalized_chars:
             logger.warning(
                 f"{self.log_prefix} 模型 {ctx.model!r} 不支持 characters[]，已降级为单 prompt"
@@ -446,10 +455,16 @@ class NewApiNaiClient(ImageClient):
         """发送 POST 请求，带重试。返回解析后的 JSON dict 或 None。"""
         endpoint = f"{self.base_url}/chat/completions"
         data = json.dumps(payload).encode("utf-8")
+        selected_api_key = self.api_key
+        key_mode = "free"
+        if ctx.ref_mode in {"vibe", "char_ref"} and self.api_key_paid:
+            selected_api_key = self.api_key_paid
+            key_mode = "paid"
+
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {normalize_token(self.api_key)}",
+            "Authorization": f"Bearer {normalize_token(selected_api_key)}",
             "User-Agent": "Mozilla/5.0",
         }
 
@@ -458,7 +473,8 @@ class NewApiNaiClient(ImageClient):
         i2i_len = len(ctx.i2i_image) if ctx.i2i_image else 0
         logger.info(
             f"{self.log_prefix} 发起 NAI 请求: model={ctx.model}, "
-            f"ref_mode={ctx.ref_mode}, has_i2i={has_i2i}, i2i_image_len={i2i_len}, "
+            f"ref_mode={ctx.ref_mode}, key_mode={key_mode}, max_tokens={payload.get('max_tokens')}, "
+            f"has_i2i={has_i2i}, i2i_image_len={i2i_len}, "
             f"i2i_strength={getattr(ctx, 'i2i_strength', None)}, prompt={prompt_preview}..."
         )
 

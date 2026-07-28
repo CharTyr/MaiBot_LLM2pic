@@ -183,7 +183,8 @@ class NewApiNaiEndpointConfig(PluginConfigBase):
     """NewAPI NAI 端点参数。"""
 
     base_url: str = Field(default="", description="NewAPI 网关根地址（OpenAI 兼容 /v1），用于 NAI 代理出图。")
-    api_key: str = Field(default="", description="NewAPI 的 API Key。", json_schema_extra={"input_type": "password"})
+    api_key: str = Field(default="", description="NewAPI 的免费 API Key，供普通文生图、i2i、inpaint 使用。", json_schema_extra={"input_type": "password"})
+    api_key_paid: str = Field(default="", description="NewAPI 的付费 API Key，vibe/char-ref 自动使用；未填写时回退免费 key。", json_schema_extra={"input_type": "password"})
     model_name: str = Field(default="nai-diffusion-4-5-full", description="NewAPI 上登记的 NAI 模型名，如 nai-diffusion-4-5-full。")
     custom_prompt_add: str = Field(default="{{{masterpiece,best quality}}},", description="拼在 LLM 生成 tag 之前的画师串/质量词（NAI 常用 {{{artist}}}, masterpiece 等）。")
     negative_prompt: str = Field(default="lowres, bad anatomy, bad hands, text, watermark", description="负向提示词")
@@ -298,6 +299,7 @@ class ComponentsConfig(PluginConfigBase):
 
     enable_image_generation: bool = Field(default=True, description="关闭后 Planner 看不到 draw_picture（/pic 仍可用，除非也关 direct_pic）。")
     enable_direct_pic_command: bool = Field(default=True, description="关闭后群内 /pic 不响应；支持回复引用图 + /pic i2i|char-ref|vibe|nsfw。")
+    enable_reverse_tag_command: bool = Field(default=True, description="关闭后群内 /tags 不响应；回复图片或本条附图反推 Danbooru tags。")
 
 
 class GitHubConfig(PluginConfigBase):

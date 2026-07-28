@@ -200,6 +200,73 @@ def extract_aspect_from_structured_output(text: str) -> Optional[str]:
     return normalize_aspect(obj.get("aspect") or obj.get("size") or obj.get("orientation"))
 
 
+def _clamp_float(value: object, *, low: float, high: float) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return max(low, min(high, number))
+
+
+def _normalize_tag_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(part).strip() for part in value]
+    else:
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item:
+            continue
+        # 禁止中文/假名/韩文进入 negative tags
+        if re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", item):
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+    return cleaned
+
+
+def extract_generation_hints_from_structured_output(text: str) -> dict:
+    """从结构化 JSON 输出中提取 i2i / negative 建议。"""
+    obj = parse_structured_prompt_payload(text)
+    if not obj:
+        return {}
+
+    hints: dict = {}
+    strength = _clamp_float(
+        obj.get("i2i_strength") if obj.get("i2i_strength") is not None else obj.get("strength"),
+        low=0.35,
+        high=0.95,
+    )
+    if strength is not None:
+        hints["i2i_strength"] = strength
+
+    noise = _clamp_float(
+        obj.get("i2i_noise") if obj.get("i2i_noise") is not None else obj.get("noise"),
+        low=0.0,
+        high=0.3,
+    )
+    if noise is not None:
+        hints["i2i_noise"] = noise
+
+    negatives = _normalize_tag_list(
+        obj.get("negative")
+        or obj.get("negative_prompt")
+        or obj.get("negative_tags")
+        or obj.get("exclude")
+    )
+    if negatives:
+        hints["negative_tags"] = negatives
+    return hints
+
+
 def extract_multi_character_payload(text: str) -> Optional[Dict[str, Any]]:
     """从 v3 multi JSON 抽出结构化角色 payload，供 NewAPI `characters[]` 通道使用。
 

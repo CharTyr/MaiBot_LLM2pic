@@ -184,6 +184,38 @@ def _normalize_aspect(aspect: Optional[str]) -> Optional[str]:
     return normalized if normalized in {"portrait", "landscape", "square"} else None
 
 
+_ASPECT_SIZE_MAP = {
+    "portrait": (832, 1216),
+    "landscape": (1216, 832),
+    "square": (1024, 1024),
+}
+_ASPECT_RATIO_LABEL = {
+    "portrait": "2:3",
+    "landscape": "3:2",
+    "square": "1:1",
+}
+
+
+def _apply_aspect_to_api_params(params: _ImageApiParams, aspect: Optional[str]) -> None:
+    """把最终画幅同步到已知后端参数；未知 URL 模式保持原配置。"""
+    normalized = _normalize_aspect(aspect)
+    if not normalized:
+        return
+    width, height = _ASPECT_SIZE_MAP[normalized]
+
+    if isinstance(params.sd_params, dict):
+        params.sd_params["width"] = width
+        params.sd_params["height"] = height
+    if isinstance(params.novelai_params, dict):
+        params.novelai_params["width"] = width
+        params.novelai_params["height"] = height
+    if isinstance(params.newapi_nai_params, dict):
+        params.newapi_nai_params["size"] = normalized
+    if isinstance(params.gradio_params, dict):
+        ratio = _ASPECT_RATIO_LABEL[normalized]
+        params.gradio_params["resolution"] = f"{width}x{height} ( {ratio} )"
+
+
 async def generate_image(
     *,
     plugin_config: dict[str, Any],
@@ -204,6 +236,8 @@ async def generate_image(
     )
     params = _build_api_params(client, model_config)
     api_type = params.api_type.lower()
+    aspect = _normalize_aspect(request.aspect)
+    _apply_aspect_to_api_params(params, aspect)
 
     logger.info(
         "[ImageGeneration] route style=%s reason=%s api=%s prompt=%s...",
@@ -250,7 +284,6 @@ async def generate_image(
                     else request.global_prompt
                 )
             newapi_params = dict(params.newapi_nai_params or {})
-            aspect = _normalize_aspect(request.aspect)
             if aspect:
                 newapi_params["size"] = aspect
             success, result = await asyncio.to_thread(

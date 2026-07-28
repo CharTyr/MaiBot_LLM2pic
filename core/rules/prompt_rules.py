@@ -582,7 +582,7 @@ _JSON_OUTPUT_INSTRUCTION = """
 你必须只输出一行 JSON（不要代码块、不要解释、不要前后缀），用于程序解析。
 
 输出格式（version=3）：
-{"version":3,"format":"single|multi","intent":"normal|selfie","continuity":"new|keep|adjust|switch","aspect":"portrait|landscape|square","global":[...],"people":[[...],[...]],"positions":[...]}
+{"version":3,"format":"single|multi","intent":"normal|selfie","continuity":"new|keep|adjust|switch","aspect":"portrait|landscape|square","i2i_strength":0.7,"i2i_noise":0.0,"negative":["speech bubble"],"global":[...],"people":[[...],[...]],"positions":[...]}
 
 字段说明：
 - version: 固定 3
@@ -590,6 +590,9 @@ _JSON_OUTPUT_INSTRUCTION = """
 - intent: "normal" 或 "selfie"
 - continuity: "new" / "keep" / "adjust" / "switch"
 - aspect: 画幅建议，必须是 "portrait" / "landscape" / "square" 之一；人物立绘/自拍/单人全身用 portrait，风景/车辆/建筑/群像/横向场景用 landscape，头像/近景/表情包/简单居中主体用 square
+- i2i_strength: 仅在有参考图/i2i 时建议，范围 0.35–0.95。0.45–0.60 尽量保留姿势构图；0.65–0.75 默认；0.80–0.90 要明显改掉原图元素（去掉对话框、换背景、大改服装）；0.90+ 几乎只借骨架
+- i2i_noise: 可选，0.0–0.3。需要减少与原图粘连时可给 0.05–0.15
+- negative: 可选，英文 Danbooru 负向 tag 数组。用户明确“不要/去掉/删除”的元素必须放这里，例如 speech bubble / dialogue box / text bubble / comic panel text；不要把用户想要的主体放进 negative
 - global: 场景整体 tag 列表
 - people: 每人物的 tag 列表（按人物顺序）；single 时输出 [] 或省略
 - positions: 多人坐标数组（可选），与 people 同序同长，元素为 `[A-E][1-5]` 字符串；用户未指定方位时省略或输出 []，禁止凭空猜测

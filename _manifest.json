@@ -28,6 +28,7 @@
     "component.get_all_plugins",
     "message.get_by_time_in_chat",
     "message.get_by_id",
+    "api.call",
     "send.text",
     "send.image",
     "send.forward",

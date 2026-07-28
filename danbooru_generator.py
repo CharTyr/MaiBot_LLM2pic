@@ -14,6 +14,7 @@ from .core.rules.prompt_rules import PROMPT_GENERATOR_JSON_TEMPLATE, SFW_PROMPT_
 from .core.services.tag_candidate_resolver import resolve_tag_candidates
 from .core.utils.prompt_output_parser import (
     extract_aspect_from_structured_output,
+    extract_generation_hints_from_structured_output,
     parse_prompt_from_structured_output,
     resolve_multi_character_payload,
 )
@@ -43,6 +44,9 @@ class PromptGenerationResult:
     global_prompt: Optional[str] = None
     characters: Optional[list[dict[str, Any]]] = None
     aspect: Optional[str] = None
+    i2i_strength: Optional[float] = None
+    i2i_noise: Optional[float] = None
+    negative_tags: Optional[list[str]] = None
     error: str = ""
 
 
@@ -413,6 +417,7 @@ async def generate_danbooru_prompt(
         selfie_mode=selfie_mode,
         has_characters=bool(multi_payload),
     )
+    gen_hints = extract_generation_hints_from_structured_output(response_text)
     selfie_appearance_policy = str(llm_config.get("selfie_appearance_policy", "auto") or "auto").strip().lower()
     enforce_tag_order = _bool_config(config, "llm.enforce_tag_order", True)
     self_character_requested = user_requests_self_character(user_request)
@@ -448,7 +453,13 @@ async def generate_danbooru_prompt(
         sfw_mode,
         nsfw_allowed,
         selfie_mode,
-        f"aspect={aspect or '-'} {generated_prompt[:500]}",
+        (
+            f"aspect={aspect or '-'} "
+            f"i2i_strength={gen_hints.get('i2i_strength', '-')} "
+            f"i2i_noise={gen_hints.get('i2i_noise', '-')} "
+            f"negative={','.join(gen_hints.get('negative_tags') or []) or '-'} "
+            f"{generated_prompt[:500]}"
+        ),
     )
 
     return PromptGenerationResult(
@@ -458,4 +469,7 @@ async def generate_danbooru_prompt(
         global_prompt=str(multi_payload.get("global_text") or "").strip() if multi_payload else None,
         characters=multi_payload.get("characters") if multi_payload else None,
         aspect=aspect,
+        i2i_strength=gen_hints.get("i2i_strength"),
+        i2i_noise=gen_hints.get("i2i_noise"),
+        negative_tags=gen_hints.get("negative_tags"),
     )

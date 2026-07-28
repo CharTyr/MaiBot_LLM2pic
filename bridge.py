@@ -571,9 +571,10 @@ class _RuntimeBridgeMixin:
         return None
 
     async def _ctx_get_image_by_message_id(self, message_id: str, stream_id: str) -> Optional[str]:
-        """通过消息 ID 获取该消息中的图片 base64 数据。"""
+        """按消息 ID 取图：先查 MaiBot DB，失败后从 QQ 实时拉取。"""
         if not message_id:
             return None
+
         try:
             result = await self.ctx.call_capability(
                 "message.get_by_id",
@@ -582,55 +583,121 @@ class _RuntimeBridgeMixin:
                 include_binary_data=True,
             )
         except Exception as exc:
-            logger.warning("[LLM2picBridge] 获取引用消息异常: message_id=%s err=%s", message_id, exc)
-            return None
+            logger.warning("[LLM2picBridge] 获取本地引用消息异常: message_id=%s err=%s", message_id, exc)
+            result = None
 
-        if not isinstance(result, dict):
-            logger.warning("[LLM2picBridge] 获取引用消息返回非 dict: message_id=%s type=%s", message_id, type(result))
-            return None
-        if result.get("success") is False:
+        if isinstance(result, dict):
+            if result.get("success") is False:
+                logger.warning(
+                    "[LLM2picBridge] 获取本地引用消息失败: message_id=%s error=%s",
+                    message_id,
+                    result.get("error"),
+                )
+            else:
+                msg = result.get("message") if "message" in result else result
+                img = self._extract_image_from_message_dict(msg, message_id, source="db")
+                if img:
+                    return img
+        else:
             logger.warning(
-                "[LLM2picBridge] 获取引用消息失败: message_id=%s error=%s",
+                "[LLM2picBridge] 本地引用消息不存在: message_id=%s type=%s，将尝试 QQ 实时拉取",
                 message_id,
-                result.get("error"),
+                type(result),
             )
-            return None
-        msg = result.get("message") if "message" in result else result
-        if not isinstance(msg, dict) or not msg:
-            logger.warning("[LLM2picBridge] 引用消息不存在/空: message_id=%s stream_id=%s", message_id, stream_id)
+
+        return await self._ctx_get_image_from_qq(message_id, stream_id)
+
+    def _extract_image_from_message_dict(
+        self,
+        message: Any,
+        message_id: str,
+        *,
+        source: str,
+    ) -> Optional[str]:
+        """从宿主或 OneBot 消息字典中提取图片。"""
+        if not isinstance(message, dict) or not message:
             return None
 
-        raw_message = msg.get("raw_message", [])
-        if not isinstance(raw_message, list):
-            logger.warning("[LLM2picBridge] 引用消息 raw_message 非列表: message_id=%s", message_id)
-            return None
+        segment_lists = []
+        for key in ("raw_message", "message"):
+            segments = message.get(key)
+            if isinstance(segments, list):
+                segment_lists.append(segments)
 
-        img = self._extract_image_from_segments(raw_message)
-        if not img:
-            # 也尝试 hash 路径：仅有 hash 时从本地 images 读
-            for seg in raw_message:
+        for segments in segment_lists:
+            image = self._extract_image_from_segments(segments)
+            if image:
+                logger.info(
+                    "[LLM2picBridge] %s 取到引用图: message_id=%s b64_len=%s",
+                    source,
+                    message_id,
+                    len(image),
+                )
+                return image
+
+            for seg in segments:
                 if not isinstance(seg, dict) or seg.get("type") != "image":
                     continue
                 data = seg.get("data", {})
-                image_hash = ""
+                image_hash = str(seg.get("hash") or "").strip()
                 if isinstance(data, dict):
-                    image_hash = str(data.get("hash") or data.get("file") or "").strip()
+                    image_hash = image_hash or str(data.get("hash") or data.get("file") or "").strip()
                 if image_hash:
                     local = self._load_image_b64_by_hash(image_hash)
                     if local:
                         logger.info(
-                            "[LLM2picBridge] 引用消息经 hash 取图: message_id=%s hash=%s b64_len=%s",
+                            "[LLM2picBridge] %s 经 hash 取图: message_id=%s hash=%s b64_len=%s",
+                            source,
                             message_id,
                             image_hash[:16],
                             len(local),
                         )
                         return local
-            logger.warning(
-                "[LLM2picBridge] 引用消息存在但不含可解码图片: message_id=%s segs=%s",
-                message_id,
-                [s.get("type") if isinstance(s, dict) else type(s).__name__ for s in raw_message[:8]],
+
+        return None
+
+    async def _ctx_get_image_from_qq(self, message_id: str, stream_id: str) -> Optional[str]:
+        """本地消息库 miss 时，通过 SnowLuma/NapCat 实时查询原始 QQ 消息。"""
+        try:
+            normalized_id = int(str(message_id).strip())
+        except (TypeError, ValueError):
+            logger.warning("[LLM2picBridge] QQ 实时取图跳过非整数消息 ID: %s", message_id)
+            return None
+
+        try:
+            result = await self.ctx.call_capability(
+                "api.call",
+                api_name="adapter.napcat.message.get_msg",
+                version="1",
+                args={"message_id": normalized_id},
             )
-        return img
+        except Exception as exc:
+            logger.warning("[LLM2picBridge] QQ 实时取图异常: message_id=%s err=%s", message_id, exc)
+            return None
+
+        if not isinstance(result, dict) or result.get("success") is False:
+            logger.warning(
+                "[LLM2picBridge] QQ 实时取图失败: message_id=%s result=%s",
+                message_id,
+                result.get("error") if isinstance(result, dict) else type(result),
+            )
+            return None
+
+        payload = result.get("result") if isinstance(result.get("result"), dict) else result
+        candidates = [payload]
+        if isinstance(payload, dict):
+            for key in ("data", "message", "result"):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    candidates.append(value)
+
+        for candidate in candidates:
+            image = self._extract_image_from_message_dict(candidate, message_id, source="qq")
+            if image:
+                return image
+
+        logger.warning("[LLM2picBridge] QQ 原始消息中未找到图片: message_id=%s", message_id)
+        return None
 
 
     def _load_image_b64_by_hash(self, image_hash: str) -> Optional[str]:

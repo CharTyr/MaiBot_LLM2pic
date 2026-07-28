@@ -143,6 +143,7 @@ class StyleRouter:
             "novelai_timeout": _endpoint_value(style_config, endpoint_config, "timeout", style_config.get("novelai_timeout", 120)),
             # NewAPI NAI 参数
             "newapi_nai_negative_prompt": _endpoint_value(style_config, endpoint_config, "negative_prompt", style_config.get("newapi_nai_negative_prompt", "")),
+            "newapi_nai_api_key_paid": _endpoint_value(style_config, endpoint_config, "api_key_paid", style_config.get("newapi_nai_api_key_paid", "")),
             "newapi_nai_size": _endpoint_value(style_config, endpoint_config, "size", style_config.get("newapi_nai_size", "portrait")),
             "newapi_nai_steps": _endpoint_value(style_config, endpoint_config, "steps", style_config.get("newapi_nai_steps", 23)),
             "newapi_nai_scale": _endpoint_value(style_config, endpoint_config, "scale", style_config.get("newapi_nai_scale", 5)),

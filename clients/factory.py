@@ -30,12 +30,16 @@ def create_client_from_model_config(
 
     base_url = str(model_config.get("base_url", "") or "")
     api_key = str(model_config.get("api_key", "") or "")
+    api_key_paid = str(
+        model_config.get("api_key_paid", model_config.get("newapi_nai_api_key_paid", "")) or ""
+    )
     if not base_url or not api_key:
         return None
 
     return NewApiNaiClient(
         base_url=base_url,
         api_key=api_key,
+        api_key_paid=api_key_paid,
         log_prefix=log_prefix,
     )
 

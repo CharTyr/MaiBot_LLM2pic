@@ -40,7 +40,7 @@ from src.common.logger import get_logger
 from .utils import _normalize_bool, _resize_image_for_edit, _resize_image_for_wd14
 from .style_router import StyleRouter
 from .actions import DrawPictureToolMetadata
-from .commands import DirectPicCommand
+from .commands import DirectPicCommand, ReverseTagCommand
 from .bridge import _RuntimeBridgeMixin, _ToolRuntimeProxy, _CommandRuntimeProxy
 from .generation_service import ImageGenerationRequest, generate_image
 from .pipeline import DrawPipelineContext, run_draw_pipeline
@@ -636,7 +636,7 @@ class LLM2PicPlugin(MaiBotPlugin, _RuntimeBridgeMixin):
         finally:
             if not task_started:
                 self._release_generation_lock(stream_id)
-        await self._ctx_send_text("正在生成图片，请稍等...", stream_id)
+        # planner 场景不发「请稍等」——客服腔出戏；图成功直接发，失败再报错
         return {"success": True, "content": "已开始生成图片，完成后会直接发送。"}
 
     async def _background_draw_picture(
@@ -770,7 +770,7 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
             self._release_generation_lock(stream_id)
             logger.error("[EditPicture] 启动编辑任务失败: %s", exc, exc_info=True)
             return {"success": False, "error": f"启动编辑任务失败: {str(exc)[:80]}"}
-        await self._ctx_send_text("正在编辑图片，请稍等...", stream_id)
+        # planner 场景不发「请稍等」——客服腔出戏；图成功直接发，失败再报错
         return {"success": True, "content": "已开始编辑图片，完成后会直接发送。"}
 
     async def _background_edit_picture(
@@ -866,6 +866,20 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
         manual_style = groups.get("style")
         nsfw_allowed = str(groups.get("nsfw", "") or "").strip().lower() == "nsfw"
         ref_mode = str(groups.get("ref", "") or "").strip().lower().replace("-", "_")
+
+        # 防误触：引用消息时 processed_plain_text 会把对方消息前缀进来
+        # 如果用户自己没有在消息里写 /pic，只是引用，不触发
+        message_obj = kwargs.get("message")
+        if message_obj is not None:
+            if isinstance(message_obj, dict):
+                user_text = message_obj.get("processed_plain_text", "") or ""
+            else:
+                user_text = getattr(message_obj, "processed_plain_text", "") or ""
+            # 去掉 [回复了…] 前缀后，找真正由用户输入的 /pic
+            clean_text = re.sub(r"^\[回复了[^\]]*\]\s*", "", user_text)
+            if "/pic" not in clean_text:
+                logger.debug("[DirectPic] 用户没有输入 /pic（只是引用），跳过。text=%s", user_text[:60])
+                return True, None, True
 
         # 任意序前缀：/pic i2i nsfw ...、/pic nsfw i2i anime ...
         while True:
@@ -979,6 +993,173 @@ B) 写实文生图：用户明确说出"写实"/"真实"/"照片级"/"realistic"
                 ref_mode=ref_mode or "none",
             )
             self._release_generation_lock(stream_id)
+
+    @Command(
+        "reverse_tag",
+        description=ReverseTagCommand.command_description,
+        pattern=ReverseTagCommand.command_pattern,
+    )
+    async def handle_reverse_tag(
+        self,
+        stream_id: str = "",
+        matched_groups: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> tuple[bool, Optional[str], bool]:
+        if not _normalize_bool(self._config_get("components.enable_reverse_tag_command", True)):
+            return True, "/tags 未启用", True
+        if not _normalize_bool(self._config_get("wd14.enabled", True)):
+            return True, "WD14 反推已关闭（config [wd14].enabled）", True
+
+        groups = matched_groups or {}
+        body = str(groups.get("body") or "").strip().lower()
+        detail = body in {"detail", "full", "verbose", "详细"}
+
+        self._spawn_background_task(
+            self._background_reverse_tag(
+                stream_id=stream_id,
+                detail=detail,
+                session_message=kwargs.get("message"),
+            )
+        )
+        return True, None, True
+
+    async def _background_reverse_tag(
+        self,
+        *,
+        stream_id: str,
+        detail: bool = False,
+        session_message: Any = None,
+    ) -> None:
+        """后台 WD14 反推：本条图 → reply_to → 失败提示。"""
+        started = time.perf_counter()
+        success = False
+        error = ""
+        try:
+            plugin_config = self.get_plugin_config_data()
+            proxy = _CommandRuntimeProxy(
+                self,
+                plugin_config=plugin_config,
+                stream_id=stream_id,
+                session_message=session_message,
+            )
+
+            image_b64: Optional[str] = None
+            source = ""
+
+            # 1) 本条附图
+            try:
+                image_b64 = await proxy._extract_input_image()
+            except Exception as exc:
+                logger.debug("[ReverseTag] 本条取图异常: %s", exc)
+            if image_b64:
+                source = "current_message_image"
+            else:
+                # 2) 引用图
+                ref = await self._ctx_resolve_session_reference(session_message, stream_id)
+                image_b64 = ref.get("image") if isinstance(ref, dict) else None
+                if image_b64:
+                    source = str(ref.get("source") or "reply_to")
+                    reply_to = str(ref.get("reply_to") or "")
+                    logger.info(
+                        "[ReverseTag] 取到引用图 source=%s reply_to=%s b64_len=%s",
+                        source,
+                        reply_to or "-",
+                        len(image_b64),
+                    )
+
+            if not image_b64:
+                await self._ctx_send_text(
+                    "请回复一张图片，或本条附图后再发 /tags（可选 /tags detail）",
+                    stream_id,
+                )
+                error = "no_image"
+                return
+
+            wd14_cfg = plugin_config.get("wd14", {}) if isinstance(plugin_config, dict) else {}
+            max_size = int(wd14_cfg.get("max_image_size", 1024) or 1024)
+            threshold = float(wd14_cfg.get("threshold", 0.35) or 0.35)
+            timeout = float(wd14_cfg.get("timeout", 60.0) or 60.0)
+            endpoint = str(wd14_cfg.get("endpoint", WD14_DEFAULT_ENDPOINT) or WD14_DEFAULT_ENDPOINT)
+
+            try:
+                resized = _resize_image_for_wd14(image_b64, max_size)
+            except Exception:
+                resized = image_b64
+
+            await self._ctx_send_text("正在反推 tags…", stream_id)
+            result = await reverse_tag_image(
+                resized,
+                endpoint=endpoint,
+                threshold=threshold,
+                timeout=timeout,
+            )
+            if not result or not result.success:
+                await self._ctx_send_text("WD14 反推失败，请稍后重试", stream_id)
+                error = "wd14_failed"
+                return
+
+            # 纯 tag 输出：不带置信度；按 threshold 过滤低置信度
+            # detail 仅放宽阈值（0.25），仍不展示 conf
+            cut = 0.25 if detail else float(threshold)
+            parts: list[str] = []
+            seen: set[str] = set()
+
+            def _add(tag: str) -> None:
+                tag = str(tag or "").strip()
+                if not tag or tag in seen:
+                    return
+                seen.add(tag)
+                parts.append(tag)
+
+            if result.character:
+                for name, conf in sorted(result.character.items(), key=lambda x: -x[1]):
+                    if float(conf) >= cut:
+                        _add(name)
+            if result.general:
+                for name, conf in sorted(result.general.items(), key=lambda x: -x[1]):
+                    if float(conf) >= cut:
+                        _add(name)
+            elif result.prompt:
+                # endpoint 只给了 prompt 串时的兜底（无 conf 可筛）
+                for tag in result.prompt.split(","):
+                    _add(tag)
+
+            text = ", ".join(parts) if parts else (result.prompt or "")
+            if not text.strip():
+                await self._ctx_send_text("反推结果为空（可能都被低置信度过滤了）", stream_id)
+                error = "empty_after_filter"
+                return
+
+            # QQ 文本过长时截断，避免发送失败
+            if len(text) > 3500:
+                text = text[:3490] + "\n…(truncated)"
+            await self._ctx_send_text(text, stream_id)
+            success = True
+            logger.info(
+                "[ReverseTag] 完成 source=%s detail=%s tags_len=%s",
+                source,
+                detail,
+                len(result.prompt or ""),
+            )
+        except Exception as exc:
+            error = str(exc)[:120]
+            logger.error("[ReverseTag] 异常: %s", exc, exc_info=True)
+            try:
+                await self._ctx_send_text(f"/tags 出错了: {str(exc)[:80]}", stream_id)
+            except Exception:
+                pass
+        finally:
+            _emit_plugin_metric(
+                op="reverse_tag",
+                success=success,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                stream_id=stream_id,
+                error=error,
+                kind="command",
+            )
+
+
+
 def create_plugin() -> LLM2PicPlugin:
     """rdev Runner 原生插件工厂。"""
     return LLM2PicPlugin()

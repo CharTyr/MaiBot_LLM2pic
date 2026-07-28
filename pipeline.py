@@ -10,6 +10,7 @@ Draw pipeline 编排器。
 from __future__ import annotations
 
 import base64
+import re
 import io
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -22,12 +23,29 @@ from .style_router import StyleRouter
 from .generation_service import (
     generate_image,
     ImageGenerationRequest,
-    _normalize_aspect,
 )
 from .utils import _normalize_bool, _resize_image_for_wd14
 from .vibe_cache import VibeCache
+from .aspect_resolver import decode_reference_image, resolve_aspect
 
 logger = get_logger("MaiBot_LLM2pic")
+
+_REMOVE_ELEMENT_RE = re.compile(
+    r"(不要|别要|去掉|删除|移除|别带|不要有|no\s+|without\s+|remove\s+)"
+    r".{0,12}?"
+    r"(对话框|对话框气泡|气泡|对话框框|speech\s*bubble|dialogue\s*box|text\s*bubble|comic\s*panel\s*text|字幕|文字框)",
+    re.IGNORECASE,
+)
+_POSE_KEEP_RE = re.compile(r"(照这个姿势|保留姿势|按这个姿势|保持构图|照构图|same pose|keep pose)", re.IGNORECASE)
+_DIALOG_NEGATIVE = (
+    "speech bubble",
+    "dialogue box",
+    "text bubble",
+    "comic panel text",
+    "spoken text",
+    "written text",
+    "caption",
+)
 
 _SIZE_MAP = {
     "portrait": (832, 1216),
@@ -55,25 +73,49 @@ class DrawPipelineContext:
     plugin: Any = None      # LLM2PicPlugin 引用（用于 _ctx_extract_image_from_recent）
     session_message: Any = None
     ref_extract_error: str = ""
+    attachment_source: str = ""
+
+
+def _decode_reference_image(image_base64: str):
+    """统一走安全的参考图解码器。"""
+    return decode_reference_image(image_base64)
+
+
+def _image_data_uri_for_reference(image_base64: str) -> str:
+    """将 char-ref/vibe 参考图转成 data URI，但保留原始尺寸、比例和透明通道。"""
+    img = _decode_reference_image(image_base64)
+    if img is None:
+        return ""
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
 
 
 def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> str:
-    """将图片 resize 到 NAI 要求的精确尺寸，返回 data URI。
+    """将图片按比例裁切后 resize 到 NAI 要求的精确尺寸，返回 data URI。
 
-    Returns:
-        data URI 字符串，或空字符串（图片太小/损坏时）。
+    NAI 的 i2i 要求参考图和目标 size 完全一致。旧逻辑直接拉伸，
+    自动画幅切换时会把人物和场景压扁；现在先做居中裁切，再缩放。
     """
-    try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(base64.b64decode(image_base64)))
-    except Exception:
-        return ""
-
-    min_side = min(img.width, img.height)
-    if min_side < 256:
+    img = _decode_reference_image(image_base64)
+    if img is None:
         return ""
 
     w, h = target_size
+    source_ratio = img.width / img.height
+    target_ratio = w / h
+    if abs(source_ratio - target_ratio) > 0.02:
+        if source_ratio > target_ratio:
+            crop_width = max(1, int(img.height * target_ratio))
+            left = max(0, (img.width - crop_width) // 2)
+            img = img.crop((left, 0, left + crop_width, img.height))
+        else:
+            crop_height = max(1, int(img.width / target_ratio))
+            top = max(0, (img.height - crop_height) // 2)
+            img = img.crop((0, top, img.width, top + crop_height))
+
+    from PIL import Image
     img = img.resize((w, h), Image.LANCZOS)
 
     buf = io.BytesIO()
@@ -81,6 +123,63 @@ def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> st
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{b64}"
 
+
+
+def _merge_negative_prompt(base_negative: str, extra_tags: list[str] | None) -> str:
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in [*(str(base_negative or "").split(",")), *(extra_tags or [])]:
+        tag = str(raw or "").strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(tag)
+    return ", ".join(items)
+
+
+def _resolve_i2i_params(
+    *,
+    user_request: str,
+    prompt_result,
+    ref_cfg: dict,
+) -> tuple[float, float, list[str], str]:
+    """合并配置默认值、LLM 建议与用户否定意图，返回 strength/noise/extra_negatives/source。"""
+    base_strength = float(ref_cfg.get("i2i_strength", 0.7) or 0.7)
+    base_noise = float(ref_cfg.get("i2i_noise", 0.0) or 0.0)
+    llm_strength = getattr(prompt_result, "i2i_strength", None)
+    llm_noise = getattr(prompt_result, "i2i_noise", None)
+    llm_neg = list(getattr(prompt_result, "negative_tags", None) or [])
+
+    strength = float(llm_strength) if llm_strength is not None else base_strength
+    noise = float(llm_noise) if llm_noise is not None else base_noise
+    source_parts = []
+    if llm_strength is not None:
+        source_parts.append("llm")
+    else:
+        source_parts.append("config")
+
+    req = str(user_request or "")
+    extra_neg = list(llm_neg)
+    if _REMOVE_ELEMENT_RE.search(req):
+        for tag in _DIALOG_NEGATIVE:
+            if tag not in {t.lower() for t in extra_neg}:
+                extra_neg.append(tag)
+        # 明确要删原图元素时，抬高 strength，避免 i2i 把对话框结构抄过来
+        if strength < 0.82:
+            strength = 0.85
+            source_parts.append("remove_boost")
+        if noise < 0.05:
+            noise = 0.08
+    if _POSE_KEEP_RE.search(req) and strength > 0.65:
+        strength = 0.6
+        source_parts.append("pose_keep")
+
+    strength = max(0.35, min(0.95, strength))
+    noise = max(0.0, min(0.3, noise))
+    return strength, noise, extra_neg, "+".join(source_parts)
 
 async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
     """从当前消息 / 当前消息引用 / 最近消息中提取附图 base64。
@@ -105,6 +204,7 @@ async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
         if ctx.source == "direct_pic" and ctx.proxy is not None:
             img = await ctx.proxy._extract_input_image()
             if img:
+                ctx.attachment_source = "current_message_image"
                 logger.info("[Pipeline] 附图来源=current_message_image b64_len=%s", len(img))
                 return img
 
@@ -116,6 +216,7 @@ async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
             img = ref_info.get("image")
             reply_to = ref_info.get("reply_to") or ""
             if img:
+                ctx.attachment_source = "reply_to"
                 logger.info(
                     "[Pipeline] 附图来源=%s reply_to=%s b64_len=%s",
                     ref_info.get("source") or "session_message_reply_or_self",
@@ -145,6 +246,7 @@ async def _extract_attachment(ctx: DrawPipelineContext) -> Optional[str]:
         if ctx.plugin is not None and not strict_ref:
             img = await ctx.plugin._ctx_extract_image_from_recent(ctx.stream_id)
             if img:
+                ctx.attachment_source = "recent_fallback"
                 logger.warning(
                     "[Pipeline] 附图来源=recent_fallback（无显式引用，可能不是用户想要的图） b64_len=%s",
                     len(img),
@@ -165,6 +267,7 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
 
     try:
         # ── 1. 附图检测 ──
+        ctx.attachment_source = ""
         attachment_b64 = None
         if ctx.ref_mode:
             attachment_b64 = await _extract_attachment(ctx)
@@ -189,15 +292,31 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
         if not ctx.ref_mode and not attachment_b64:
             attachment_b64 = await _extract_attachment(ctx)
 
-        # ── 2. WD14 反推（有附图时都做）──
+        # ── 2. WD14 反推 ──
+        # i2i / char_ref / vibe：参考图走 NAI 原生通道，不要 WD14 全量反推污染 prompt。
+        # 无 ref_mode 的普通附图：仍可 WD14 做 tag 增强。
         reference_tags = ""
         reference_image_for_llm = ""
         if attachment_b64:
             wd14_config = ctx.config.get("wd14", {})
-            if _normalize_bool(wd14_config.get("enabled", True)):
+            max_size = int(wd14_config.get("max_image_size", 1024) or 1024)
+            # 视觉 LLM 仍需要缩略图；与是否跑 WD14 解耦
+            try:
+                reference_image_for_llm = _resize_image_for_wd14(attachment_b64, max_size)
+            except Exception as exc:
+                logger.warning("[Pipeline] 参考图缩略失败，回退原图: %s", exc)
+                reference_image_for_llm = attachment_b64
+
+            # 显式参考图模式都吃图像素（i2i/char_ref/vibe），WD14 全量反推只会污染 prompt
+            _ref = str(ctx.ref_mode or "").strip().lower().replace("-", "_")
+            skip_wd14 = _ref in {"i2i", "char_ref", "vibe"}
+            if skip_wd14:
+                logger.info(
+                    "[Pipeline] ref_mode=%s 跳过 WD14 反推（参考图走 NAI 原生通道；视觉 LLM 仍可看图）",
+                    _ref,
+                )
+            elif _normalize_bool(wd14_config.get("enabled", True)):
                 try:
-                    max_size = int(wd14_config.get("max_image_size", 1024) or 1024)
-                    reference_image_for_llm = _resize_image_for_wd14(attachment_b64, max_size)
                     from .wd14_client import reverse_tag_image, DEFAULT_ENDPOINT as WD14_DEFAULT
                     endpoint = str(wd14_config.get("endpoint", WD14_DEFAULT) or WD14_DEFAULT)
                     threshold = float(wd14_config.get("threshold", 0.35) or 0.35)
@@ -242,13 +361,40 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
         logger.info(f"[Pipeline] style={selected_style}, api_type={api_type}, model_config_keys={list(model_config.keys()) if model_config else None}")
 
         # ── 5. 确定目标尺寸 ──
-        aspect = _normalize_aspect(prompt_result.aspect) or "portrait"
+        # prompt_result.aspect 只是 LLM 建议；最终由用户意图、场景 tag、
+        # 参考图比例和 LLM 建议共同裁决，避免“模型一律 portrait”。
+        aspect_decision = resolve_aspect(
+            user_request=ctx.user_request,
+            generated_prompt=str(getattr(prompt_result, "prompt", "") or ""),
+            llm_aspect=getattr(prompt_result, "aspect", None),
+            has_characters=bool(getattr(prompt_result, "characters", None)),
+            selfie_mode=ctx.selfie_mode,
+            reference_image_base64=(
+                attachment_b64 or ""
+                if ctx.attachment_source != "recent_fallback"
+                else ""
+            ),
+        )
+        aspect = aspect_decision.aspect
         target_size = _SIZE_MAP.get(aspect, (832, 1216))
+        logger.info(
+            "[Pipeline] aspect decision: aspect=%s source=%s llm=%s reference=%s scores=%s target_size=%s",
+            aspect_decision.aspect,
+            aspect_decision.source,
+            aspect_decision.llm_aspect or "-",
+            aspect_decision.reference_aspect or "-",
+            aspect_decision.scores,
+            target_size,
+        )
 
         # ── 6. 参考图 resize ──
         ref_image_data_uri = ""
         if ctx.ref_mode and attachment_b64:
-            ref_image_data_uri = _resize_image_for_nai(attachment_b64, target_size)
+            # i2i 要求参考图与输出 size 完全一致；char-ref/vibe 则保留原图比例。
+            if ctx.ref_mode == "i2i":
+                ref_image_data_uri = _resize_image_for_nai(attachment_b64, target_size)
+            else:
+                ref_image_data_uri = _image_data_uri_for_reference(attachment_b64)
             if not ref_image_data_uri:
                 await _safe_send(ctx, "附图质量不足（太小或损坏），跳过参考图模式")
                 ctx.ref_mode = ""
@@ -259,7 +405,7 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
                 ctx, prompt_result, model_config, target_size, ref_image_data_uri
             )
         else:
-            success = await _generate_with_legacy(ctx, prompt_result, model_config)
+            success = await _generate_with_legacy(ctx, prompt_result, model_config, aspect)
 
         return success
 
@@ -285,8 +431,18 @@ async def _generate_with_newapi_nai(
     if prompt_result.characters and prompt_result.global_prompt:
         base_prompt = prompt_result.global_prompt
 
-    # 加 custom_prompt_add
-    final_prompt = ctx.proxy._build_final_prompt(base_prompt, model_config)
+    # 参考图模式可以覆盖普通文生图的 custom_prompt_add。
+    # Vibe 的风格来自参考图，不应叠加 anime 配置里的固定画师串。
+    ref_cfg = ctx.config.get("generation", {}).get("ref_image", {})
+    prompt_model_config = model_config
+    if ctx.ref_mode == "vibe":
+        prompt_model_config = dict(model_config or {})
+        prompt_model_config["custom_prompt_add"] = str(
+            ref_cfg.get("vibe_custom_prompt_add", "{{{masterpiece, best quality}}},") or ""
+        )
+        logger.info("[Pipeline] vibe 使用独立 prompt 前缀，跳过普通固定画师风格串")
+
+    final_prompt = ctx.proxy._build_final_prompt(base_prompt, prompt_model_config)
     logger.info(f"[Pipeline] final_prompt (first 300): {final_prompt[:300]}")
     logger.info(f"[Pipeline] has azuma_seren: {"azuma_seren" in final_prompt}, has characters: {bool(prompt_result.characters)}")
 
@@ -313,15 +469,29 @@ async def _generate_with_newapi_nai(
     # 参考图字段
     ref_cfg = ctx.config.get("generation", {}).get("ref_image", {})
     if ctx.ref_mode == "i2i" and ref_image_data_uri:
+        strength, noise, extra_neg, strength_source = _resolve_i2i_params(
+            user_request=ctx.user_request,
+            prompt_result=prompt_result,
+            ref_cfg=ref_cfg if isinstance(ref_cfg, dict) else {},
+        )
         gen_ctx.i2i_image = ref_image_data_uri
-        gen_ctx.i2i_strength = float(ref_cfg.get("i2i_strength", 0.7) or 0.7)
-        gen_ctx.i2i_noise = float(ref_cfg.get("i2i_noise", 0.0) or 0.0)
+        gen_ctx.i2i_strength = strength
+        gen_ctx.i2i_noise = noise
+        gen_ctx.negative_prompt = _merge_negative_prompt(gen_ctx.negative_prompt, extra_neg)
         logger.info(
-            "[Pipeline] i2i 已绑定参考图: uri_len=%s strength=%s noise=%s size=%s",
+            "[Pipeline] i2i 已绑定参考图: uri_len=%s strength=%s noise=%s size=%s source=%s negative_extra=%s",
             len(ref_image_data_uri),
             gen_ctx.i2i_strength,
             gen_ctx.i2i_noise,
             target_size,
+            strength_source,
+            ",".join(extra_neg) if extra_neg else "-",
+        )
+    elif getattr(prompt_result, "negative_tags", None):
+        # 非 i2i 也允许 LLM 追加 negative
+        gen_ctx.negative_prompt = _merge_negative_prompt(
+            gen_ctx.negative_prompt,
+            list(prompt_result.negative_tags or []),
         )
     elif ctx.ref_mode == "char_ref" and ref_image_data_uri:
         gen_ctx.char_ref_image = ref_image_data_uri
@@ -386,6 +556,7 @@ async def _generate_with_legacy(
     ctx: DrawPipelineContext,
     prompt_result: Any,
     model_config: Optional[dict],
+    aspect: str,
 ) -> bool:
     """非 newapi_nai 端点的旧路径回退。"""
     request = ImageGenerationRequest(
@@ -394,7 +565,7 @@ async def _generate_with_legacy(
         llm_style=prompt_result.style,
         global_prompt=prompt_result.global_prompt,
         characters=prompt_result.characters,
-        aspect=prompt_result.aspect,
+        aspect=aspect,
     )
     generation_result = await generate_image(
         plugin_config=ctx.config,

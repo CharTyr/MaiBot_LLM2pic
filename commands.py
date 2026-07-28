@@ -14,3 +14,17 @@ class DirectPicCommand:
     # 只抓 /pic 后整段 body；nsfw/ref/style 在 plugin 里任意序解析。
     # 勿用「多个具名分组 + 量词交替」：Python 会用最后一次交替覆盖，冲掉先前 nsfw。
     command_pattern = r"/pic\s+(?P<body>.+)$"
+
+
+class ReverseTagCommand:
+    """纯 WD14 反推：只回 tag，不出图。"""
+
+    command_name = "reverse_tag"
+    command_description = (
+        "WD14 反推图片 Danbooru tags，只回文本不出图。"
+        "用法：回复一张图片发 /tags；或本条附图 + /tags。"
+        "可选 /tags detail 放宽置信度阈值（仍不显示 conf）。"
+    )
+    # 勿加 ^：回复引用时正文前会有 [回复了…] 前缀（同 /pic 坑）
+    command_pattern = r"/tags(?:\s+(?P<body>\S.*))?$"
+
