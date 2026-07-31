@@ -12,6 +12,7 @@ from src.common.logger import get_logger
 
 from .core.rules.prompt_rules import PROMPT_GENERATOR_JSON_TEMPLATE, SFW_PROMPT_GENERATOR_JSON_TEMPLATE
 from .core.services.tag_candidate_resolver import resolve_tag_candidates
+from .core.services.character_tag_validator import get_character_tag_validator
 from .core.utils.prompt_output_parser import (
     extract_aspect_from_structured_output,
     extract_generation_hints_from_structured_output,
@@ -447,6 +448,23 @@ async def generate_danbooru_prompt(
         enforce_tag_order=enforce_tag_order,
         selfie_appearance_policy=selfie_appearance_policy,
     )
+
+    # Runtime character tag verification (never blocks; wrong tags like
+    # "zoe (palworld)" -> "zoe_rayne", low-data chars get appearance anchors).
+    try:
+        tag_validator = get_character_tag_validator(config)
+        if tag_validator is not None:
+            generated_prompt = await tag_validator.validate_prompt(generated_prompt)
+            if multi_payload and isinstance(multi_payload, dict):
+                if multi_payload.get("global_text"):
+                    multi_payload["global_text"] = await tag_validator.validate_prompt(
+                        str(multi_payload["global_text"])
+                    )
+                for _c in multi_payload.get("characters") or []:
+                    if isinstance(_c, dict) and _c.get("prompt"):
+                        _c["prompt"] = await tag_validator.validate_prompt(str(_c["prompt"]))
+    except Exception as _tag_exc:
+        logger.warning("[DanbooruPrompt] tag validation skipped (never blocks): %s", _tag_exc)
 
     logger.info(
         "[DanbooruPrompt] generated sfw=%s nsfw_allowed=%s selfie=%s tags=%s",
