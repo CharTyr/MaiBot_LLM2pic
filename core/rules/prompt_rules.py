@@ -170,12 +170,20 @@ _TAG_CANDIDATES_USAGE = """
 <tag_candidates_usage>
 ## 候选标签的使用与发散规范（核心法则）
 
-系统通过 Danbooru 数据库为你检索并提供两类标准候选标签：
+系统通过 Danbooru 数据库为你检索并提供通用画面词汇（服装、道具、动作、环境）：
 
-### 1. 语义匹配与作品归属（精准锚定，严防串角）
-- 包含验证过的精准角色名（如 'viper_(valorant)'）、核心特征、动作、服装与场景词。
-- **作品归属硬红线**：当用户明确指定了作品世界观（如“碧蓝档案的星野”、“原神的雷电将军”、“崩铁的银狼”），角色 tag 必须属于该作品（如 `hoshino_(blue_archive)`）。
-- **严禁跨作品张冠李戴**：Danbooru 候选标签仅供参考，若候选词中包含同名但属于其他作品的角色（例如候选里出现了《我推的孩子》的 `hoshino_ai`），**严禁采纳**！必须忽略错误候选，写出目标作品的标准 tag `character_name_(series)`。
+### 1. 角色主体完全依据用户请求（严防串角与分词幻觉）
+- 角色必须【100% 依据用户在绘图请求中指明的角色与作品】。
+- 必须写出该角色在 Danbooru 上的标准英文全称与作品后缀 `name_(series)`：
+  - “小鸟游星野 / 碧蓝档案星野” → `hoshino_(blue_archive)` 或 `takanashi_hoshino_(blue_archive)`
+  - “星野爱 / 我推的孩子” → `hoshino_ai`
+  - “初音未来” → `hatsune_miku_(vocaloid)`
+  - “东雪莲” → `{{{azuma_seren}}}, silver-white twin tails, purple eyes`
+- **严禁因为中文名字包含某些字（如包含“小鸟”或“星野”）就擅自拼凑成错误角色**（严禁将小鸟游星野画成 takanashi_kiara 或 hoshino_ai）！
+
+### 2. 候选标签仅用于通用动作、服饰与道具
+- 候选标签是你的英汉词库（如盾牌 shield、爆弹枪 bolter、长椅 bench 等）。
+- 挑选与用户请求相符的通用词汇融入英文描述。
 
 ### 2. 共现推荐（受控发散的首要来源）
 - 代表 Danbooru 上真实高质量画作中与上述主体最常一同出现的标准搭配。

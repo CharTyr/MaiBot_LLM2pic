@@ -171,25 +171,30 @@ class DanbooruOnlineRetriever:
     def format_candidates(self, results: Dict[str, List[Dict]]) -> str:
         """
         将检索结果格式化为可注入 LLM 模板的文本块。
-
-        Args:
-            results: retrieve() 的返回值
-
-        Returns:
-            格式化的 <tag_candidates> 文本块
+        过滤掉 Character/Copyright 类型的模糊匹配，防止检索器将同名/分词错误的角色标签（如把小鸟游星野拼成 kotori 或 hoshino_ai）强塞给 LLM 导致串角。
         """
-        search_items = results.get("search", [])
-        related_items = results.get("related", [])
+        raw_search = results.get("search", [])
+        raw_related = results.get("related", [])
+
+        # 仅保留通用词汇（道具、服装、动作、环境、特效等），剔除模糊角色匹配
+        search_items = [
+            it for it in raw_search
+            if str(it.get("category", "")).lower() not in {"character", "copyright"}
+        ]
+        related_items = [
+            it for it in raw_related
+            if str(it.get("category", "")).lower() not in {"character", "copyright"}
+        ]
 
         if not search_items and not related_items:
             return ""
 
         lines = ["<tag_candidates>"]
-        lines.append("以下是从 Danbooru 标签数据库中检索到的候选标签：\n")
+        lines.append("以下是从 Danbooru 标签数据库中检索到的【通用词汇候选】（动作、服装、道具、场景，仅作词汇参考）：\n")
 
         # 语义匹配部分
         if search_items:
-            lines.append("## 语义匹配（与用户描述直接相关，优先选用）")
+            lines.append("## 通用语义词汇（用于描述服饰、动作、道具与场景）")
             for item in search_items:
                 cn = item.get("cn_name", "")
                 tag = item["tag"]
@@ -201,7 +206,7 @@ class DanbooruOnlineRetriever:
         # 共现推荐部分
         if related_items:
             lines.append("")
-            lines.append("## 共现推荐（与上述标签在真实画作中经常搭配出现）")
+            lines.append("## 共现搭配词汇（真实画作中常搭配的场景细节）")
             for item in related_items:
                 cn = item.get("cn_name", "")
                 tag = item["tag"]
