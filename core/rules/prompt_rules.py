@@ -754,7 +754,10 @@ _NAI_CAPTION_CORE_RULES = """
 - 明确媒介与质感，如 `A cinematic anime illustration of...`、`A detailed digital painting of...`
 - 设定主色调与氛围感（soft pastel lighting, moody dusk, vibrant neon ambiance）
 
-### 2. 人物外貌、神态与目光 (Subject Appearance & Expression)
+### 2. 人物外貌、神态与主体聚焦 (Subject Appearance & Solo Focus)
+- 【单人构图硬约束】：除非用户明确要求“多人/群像/与XX一起/街道人群”，否则默认必须为【纯粹的单人焦点（solo focus, 1girl / 1boy）】。
+- 画面描述中明确指定她是画面中唯一的焦点（e.g. `A solo focus illustration of ...`, `standing alone gracefully...`）。
+- 【背景人物严禁出现】：背景严禁描绘行人、NPC、路人、围观群众或无关人形阴影，背景必须是纯环境（建筑、街道、光影、自然景物），保持画面主体干净纯粹。
 - 精确刻画发型发色、瞳色、面部神态、视线方向（e.g. `with silver-white twin tails and sharp purple eyes, looking towards the viewer with a gentle smile`）
 - 著名角色/自设角色请在 `characters` 列表中提供标准 Danbooru 锚定 tag（如 `{{{azuma_seren}}}, silver-white twin tails, purple eyes`）
 
