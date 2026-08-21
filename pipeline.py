@@ -125,37 +125,6 @@ def _resize_image_for_nai(image_base64: str, target_size: tuple[int, int]) -> st
 
 
 
-_CROWD_NEGATIVE_TAGS = {
-    "multiple girls", "multiple boys", "2girls", "2boys", "3girls", "3boys",
-    "crowd", "people in background", "background people", "pedestrians",
-    "extra person", "extra characters", "multiple views"
-}
-
-
-def _is_multi_person_intent(user_request: str, prompt: str, characters: list | None) -> bool:
-    """Detect if the user or generated prompt explicitly requests multiple characters."""
-    if characters and len(characters) > 1:
-        return True
-    combined = f"{user_request} {prompt}".lower()
-    multi_patterns = [
-        r"\b2girls\b", r"\b3girls\b", r"\b2boys\b", r"\b3boys\b",
-        r"\bmultiple_girls\b", r"\bmultiple_boys\b", r"\bcrowd\b",
-        r"双人", r"两人", r"三人", r"多人", r"群像", r"贴贴", r"百合", r"和.+一起", r"与.+一起", r"同框"
-    ]
-    return any(re.search(pat, combined) for pat in multi_patterns)
-
-
-def _clean_negative_for_multi_person(negative_prompt: str) -> str:
-    """Remove multiple-person negative constraints when user explicitly requests multi-character art."""
-    cleaned: list[str] = []
-    for token in negative_prompt.split(","):
-        stripped = token.strip().strip("{}").strip()
-        if not stripped or stripped.lower() in _CROWD_NEGATIVE_TAGS:
-            continue
-        cleaned.append(token.strip())
-    return ", ".join(cleaned)
-
-
 def _merge_negative_prompt(base_negative: str, extra_tags: list[str] | None) -> str:
     items: list[str] = []
     seen: set[str] = set()
@@ -521,10 +490,9 @@ async def _generate_with_newapi_nai(
     logger.info(f"[Pipeline] has azuma_seren: {"azuma_seren" in final_prompt}, has characters: {bool(prompt_result.characters)}")
 
     # 构造 GenerationContext
-    effective_negative = str(mc.get("newapi_nai_negative_prompt", "") or "")
-    if _is_multi_person_intent(ctx.user_request, base_prompt, prompt_result.characters):
-        effective_negative = _clean_negative_for_multi_person(effective_negative)
-        logger.info("[Pipeline] 检测到多人/双人/群像需求，已动态解除 negative_prompt 中的人数/路人限制")
+    base_negative = str(mc.get("newapi_nai_negative_prompt", "") or "")
+    llm_negatives = list(getattr(prompt_result, "negative_tags", None) or [])
+    effective_negative = _merge_negative_prompt(base_negative, llm_negatives)
 
     gen_ctx = GenerationContext(
         prompt=final_prompt,
