@@ -342,6 +342,7 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
             reference_tags=reference_tags,
             reference_image_base64=reference_image_for_llm,
             api_type=target_api_type,
+            ref_mode=ctx.ref_mode,
         )
         if not prompt_result.success:
             await _safe_send(ctx, f"提示词生成失败: {prompt_result.error[:80]}")

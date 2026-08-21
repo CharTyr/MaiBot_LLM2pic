@@ -789,6 +789,7 @@ class _RuntimeBridgeMixin:
         reference_image_base64: str = "",
         vlm_description: str = "",
         api_type: str = "newapi_nai",
+        ref_mode: str = "",
     ) -> PromptGenerationResult:
         # 当有参考图但写 tag 的模型不支持视觉时，把 VLM 识图结果拼到 reference_tags
         effective_reference_tags = reference_tags
@@ -815,6 +816,7 @@ class _RuntimeBridgeMixin:
                 reference_tags=effective_reference_tags,
                 reference_image_base64=reference_image_base64,
                 api_type=api_type,
+                ref_mode=ref_mode,
             )
 
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
@@ -923,6 +925,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata, ImageClientMixin):
         reference_image_base64: str = "",
         vlm_description: str = "",
         api_type: str = "newapi_nai",
+        ref_mode: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -935,6 +938,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata, ImageClientMixin):
             reference_image_base64=reference_image_base64,
             vlm_description=vlm_description,
             api_type=api_type,
+            ref_mode=ref_mode,
         )
 
 
@@ -981,6 +985,7 @@ class _CommandRuntimeProxy(DirectPicCommand, ImageClientMixin):
         reference_image_base64: str = "",
         vlm_description: str = "",
         api_type: str = "newapi_nai",
+        ref_mode: str = "",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -993,4 +998,5 @@ class _CommandRuntimeProxy(DirectPicCommand, ImageClientMixin):
             reference_image_base64=reference_image_base64,
             vlm_description=vlm_description,
             api_type=api_type,
+            ref_mode=ref_mode,
         )

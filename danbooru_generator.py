@@ -180,14 +180,25 @@ def _render_generator_prompt(
     custom_system_prompt: str,
     tag_candidates: str,
     reference_tags: str = "",
+    ref_mode: str = "",
 ) -> str:
     custom_block = custom_system_prompt.strip()
     if custom_block:
         custom_block = custom_block.replace("{persona}", persona).strip() + "\n\n"
     selfie_hint = "用户明确请求自拍/当前状态，请按自拍模式生成。" if selfie_mode else ""
+    ref_hint = ""
+    normalized_ref = str(ref_mode or "").strip().lower().replace("-", "_")
+    if normalized_ref in {"i2i", "char_ref", "vibe"}:
+        ref_hint = f"""
+## 【重要提示】当前为图生图/参考图模式（ref_mode={normalized_ref}）
+- 用户正在基于已有的参考图进行重绘或换角（借用参考图的姿势、构图和服装）。
+- 【严禁凭空编造冲突的新服装、新动作或特定背景】（如不要脑补西装、领带、特定房间、咖啡杯等未被用户明确要求的元素）。
+- 提示词应重点聚焦于人物特征转换（如东雪莲的银白双马尾、紫瞳、神态）与整体画质光影，把服装款式、肢体姿势与场景构图完全留给参考图本身。
+"""
+
     request_text = f"""## 用户的绘图请求（最高优先级）
 {user_request.strip() or "根据聊天内容生成一张合适的图片"}
-
+{ref_hint}
 ## 最近的聊天记录（只能用于补充场景、氛围、情绪或消歧，不能替换主体）
 {chat_messages.strip() or "（暂无聊天记录）"}
 
@@ -331,6 +342,7 @@ async def generate_danbooru_prompt(
     reference_tags: str = "",
     reference_image_base64: str = "",
     api_type: str = "newapi_nai",
+    ref_mode: str = "",
 ) -> PromptGenerationResult:
     """Generate Danbooru tags or NAI 4.5 Natural Language Caption based on backend."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
@@ -361,6 +373,7 @@ async def generate_danbooru_prompt(
         custom_system_prompt=custom_system_prompt,
         tag_candidates=tag_candidates,
         reference_tags=reference_tags,
+        ref_mode=ref_mode,
     )
 
     max_attempts = max(1, min(int(llm_config.get("prompt_retry_attempts", 3) or 3), 5))
