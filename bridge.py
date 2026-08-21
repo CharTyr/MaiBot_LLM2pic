@@ -922,6 +922,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata, ImageClientMixin):
         reference_tags: str = "",
         reference_image_base64: str = "",
         vlm_description: str = "",
+        api_type: str = "newapi_nai",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
@@ -979,6 +980,7 @@ class _CommandRuntimeProxy(DirectPicCommand, ImageClientMixin):
         reference_tags: str = "",
         reference_image_base64: str = "",
         vlm_description: str = "",
+        api_type: str = "newapi_nai",
     ) -> PromptGenerationResult:
         return await self._runtime._ctx_generate_prompt_with_style(
             user_request=user_request,
