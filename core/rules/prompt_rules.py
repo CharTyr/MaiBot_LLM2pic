@@ -38,8 +38,9 @@ _HARD_RULES = """
 判断角色属于以下哪种形式，按对应处理：
 
 **形式 A · 已知二次元角色（有具体作品出处）**
-- 写法：`character_name (series)`，如 `hatsune miku (vocaloid)`、`rem (re zero)`、`flandre scarlet (touhou)`
-- 日文角色名用罗马音，使用完整名字而非昵称
+- 写法：`character_name (series)`，如 `hoshino (blue_archive)`、`hatsune miku (vocaloid)`、`rem (re zero)`、`flandre scarlet (touhou)`
+- 日文角色名用罗马音，带上正确的作品后缀 `(series)`
+- 严禁把同名/近名角色与其他作品混淆（如碧蓝档案星野是 `hoshino_(blue_archive)`，不是 `hoshino_ai`）
 - **禁止补充发色/发型/瞳色/体型等外貌 tag**：模型已知该角色默认外貌，手动添加会冲突导致画崩
 - 仅当用户明确要求改变外貌时，才在角色名后追加变化项
 
@@ -171,9 +172,10 @@ _TAG_CANDIDATES_USAGE = """
 
 系统通过 Danbooru 数据库为你检索并提供两类标准候选标签：
 
-### 1. 语义匹配（精准锚定，高优先级）
+### 1. 语义匹配与作品归属（精准锚定，严防串角）
 - 包含验证过的精准角色名（如 'viper_(valorant)'）、核心特征、动作、服装与场景词。
-- **强制原则**：凡与用户意图吻合的语义匹配 tag **必须直接采纳**，严禁擅自用自行生造/翻译的近义词替换。
+- **作品归属硬红线**：当用户明确指定了作品世界观（如“碧蓝档案的星野”、“原神的雷电将军”、“崩铁的银狼”），角色 tag 必须属于该作品（如 `hoshino_(blue_archive)`）。
+- **严禁跨作品张冠李戴**：Danbooru 候选标签仅供参考，若候选词中包含同名但属于其他作品的角色（例如候选里出现了《我推的孩子》的 `hoshino_ai`），**严禁采纳**！必须忽略错误候选，写出目标作品的标准 tag `character_name_(series)`。
 
 ### 2. 共现推荐（受控发散的首要来源）
 - 代表 Danbooru 上真实高质量画作中与上述主体最常一同出现的标准搭配。

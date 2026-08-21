@@ -153,7 +153,48 @@ def _tag_key(tag: str) -> str:
     return re.sub(r"[\s:_\-\.]", "", tag.lower())
 
 
-async def _resolve_character(query: str, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
+
+# Known series keywords mapping to Danbooru series namespace
+_SERIES_MAP = {
+    "blue archive": "blue_archive",
+    "blue_archive": "blue_archive",
+    "genshin impact": "genshin_impact",
+    "genshin": "genshin_impact",
+    "honkai star rail": "honkai:_star_rail",
+    "star rail": "honkai:_star_rail",
+    "honkai impact": "honkai_impact_3rd",
+    "fate": "fate",
+    "fate stay night": "fate/stay_night",
+    "fate grand order": "fate/grand_order",
+    "fgo": "fate/grand_order",
+    "touhou": "touhou",
+    "arknights": "arknights",
+    "azur lane": "azur_lane",
+    "idolmaster": "idolmaster",
+    "project sekai": "project_sekai",
+    "vocaloid": "vocaloid",
+    "zenless zone zero": "zenless_zone_zero",
+    "zzz": "zenless_zone_zero",
+    "wuthering waves": "wuthering_waves",
+    "oshi no ko": "oshi_no_ko",
+    "palworld": "palworld",
+    "kancolle": "kancolle",
+    "kantai collection": "kancolle",
+}
+
+
+def _detect_series_from_prompt(prompt: str) -> Optional[str]:
+    """Extract a target series keyword if explicitly mentioned in the prompt."""
+    p_lower = str(prompt or "").lower().replace(":", " ").replace("-", " ")
+    for key, series in _SERIES_MAP.items():
+        # Match as whole word phrase
+        pattern = r"\b" + re.escape(key) + r"\b"
+        if re.search(pattern, p_lower):
+            return series
+    return None
+
+
+async def _resolve_character(query: str, client: httpx.AsyncClient, series_context: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Resolve a tag query to its canonical character entry, or None.
 
     Strategy (avoids autocomplete's fuzzy mis-matches):
@@ -174,6 +215,17 @@ async def _resolve_character(query: str, client: httpx.AsyncClient) -> Optional[
         name_part = m.group(1).strip().strip("_")
         series_part = m.group(2).strip().strip("_")
 
+    # If series_context is specified, prioritize checking if character exists under that series
+    if series_context and not series_part:
+        bare = name_part.split("_")[0]
+        probe_query = f"{bare}_({series_context})"
+        series_items = await _autocomplete(probe_query, client)
+        for it in series_items:
+            if isinstance(it, dict) and it.get("category") == 4:
+                val = str(it.get("value") or "")
+                if series_context in val.lower():
+                    return it
+
     # Step 2: exact full-query match (punctuation-insensitive)
     items = await _autocomplete(query, client)
     if items:
@@ -183,6 +235,9 @@ async def _resolve_character(query: str, client: httpx.AsyncClient) -> Optional[
                 continue
             value = str(it.get("value") or "")
             if _tag_key(value) == q_key and it.get("category") == 4:
+                # If target series is specified in context, reject cross-series false friends
+                if series_context and "(" in value and series_context not in value.lower():
+                    continue
                 return it
 
     # Step 3: bare-name search, strict prefix match on token boundary
@@ -319,7 +374,8 @@ class CharacterTagValidator:
 
             async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
                 for tok in tokens:
-                    resolved = await _resolve_character(tok, client)
+                    series_ctx = _detect_series_from_prompt(prompt)
+                    resolved = await _resolve_character(tok, client, series_context=series_ctx)
                     if not resolved:
                         logger.info(f"[TagValidator] no match for '{tok}', leaving as-is")
                         continue
