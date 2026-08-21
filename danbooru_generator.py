@@ -339,7 +339,8 @@ async def generate_danbooru_prompt(
     normalized_api = str(api_type or "").strip().lower().replace("-", "_")
     is_nai = normalized_api in ("newapi_nai", "nai")
     prompt_mode = str(llm_config.get("prompt_mode", "auto") or "auto").strip().lower()
-    use_caption = (prompt_mode == "caption") or (prompt_mode == "auto" and is_nai)
+    # NAI 4.5 默认启用自然语言 Caption 模式，除非显式配置 prompt_mode = "danbooru_tags"
+    use_caption = (is_nai and prompt_mode != "danbooru_tags") or (prompt_mode == "caption")
 
     if use_caption:
         template = SFW_NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE
