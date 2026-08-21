@@ -277,7 +277,7 @@ class _RuntimeBridgeMixin:
             # - 或 generate_response_for_image(prompt, image_base64, image_format, options)
             # 旧代码误调 generate_response_with_message_async（不存在）→ 必炸降级纯文本
             from src.common.data_models.llm_service_data_models import LLMGenerationOptions
-            from src.llm_models.payload_content.message import MessageBuilder
+            from src.llm_models.payload_content.context_item import ContextItemBuilder
 
             raw_b64 = str(image_base64 or "")
             image_format = "jpeg"
@@ -297,13 +297,20 @@ class _RuntimeBridgeMixin:
                 image_format = "png"
 
             def message_factory(client) -> list:
-                builder = MessageBuilder()
+                # 上游已移除 MessageBuilder，统一用 ContextItemBuilder
+                builder = ContextItemBuilder()
                 builder.add_text_content(str(prompt or ""))
-                builder.add_image_content(
-                    image_base64=raw_b64,
-                    image_format=image_format,
-                    support_formats=client.get_support_image_formats(),
-                )
+                try:
+                    builder.add_image_content(
+                        image_base64=raw_b64,
+                        image_format=image_format,
+                        support_formats=client.get_support_image_formats(),
+                    )
+                except TypeError:
+                    builder.add_image_content(
+                        image_base64=raw_b64,
+                        image_format=image_format,
+                    )
                 return [builder.build()]
 
             llm_client = llm_service.LLMServiceClient(
@@ -781,6 +788,7 @@ class _RuntimeBridgeMixin:
         reference_tags: str = "",
         reference_image_base64: str = "",
         vlm_description: str = "",
+        api_type: str = "newapi_nai",
     ) -> PromptGenerationResult:
         # 当有参考图但写 tag 的模型不支持视觉时，把 VLM 识图结果拼到 reference_tags
         effective_reference_tags = reference_tags
@@ -806,6 +814,7 @@ class _RuntimeBridgeMixin:
                 custom_system_prompt=custom_system_prompt,
                 reference_tags=effective_reference_tags,
                 reference_image_base64=reference_image_base64,
+                api_type=api_type,
             )
 
         base_prompt = custom_system_prompt.strip() if custom_system_prompt else DEFAULT_SYSTEM_PROMPT
@@ -924,6 +933,7 @@ class _ToolRuntimeProxy(DrawPictureToolMetadata, ImageClientMixin):
             reference_tags=reference_tags,
             reference_image_base64=reference_image_base64,
             vlm_description=vlm_description,
+            api_type=api_type,
         )
 
 
@@ -980,4 +990,5 @@ class _CommandRuntimeProxy(DirectPicCommand, ImageClientMixin):
             reference_tags=reference_tags,
             reference_image_base64=reference_image_base64,
             vlm_description=vlm_description,
+            api_type=api_type,
         )

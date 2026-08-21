@@ -269,6 +269,36 @@ def _rewrite_prompt(prompt: str, replacements: Dict[str, str]) -> str:
     return _CHAR_TOKEN_RE.sub(_replace_match, prompt)
 
 
+
+def _missing_appearance_anchors(prompt: str, anchors: List[str]) -> List[str]:
+    """Skip hair/eye anchors when the prompt already describes appearance.
+
+    Danbooru low-post samples often carry the wrong hair color for OC / 换角.
+    """
+    raw = str(prompt or "")
+    norm = raw.lower().replace("-", "_")
+    compact = re.sub(r"\s+", "_", norm)
+    has_hair = bool(
+        _COLOR_HINT_RE.search(compact)
+        or re.search(r"twin\s*tails|twintails|ponytail|\bbraid", norm)
+    )
+    has_eyes = bool(re.search(r"[a-z]+_eyes|\b[a-z]+\s+eyes\b", norm))
+    missing: List[str] = []
+    for anchor in anchors:
+        item = str(anchor or "").strip()
+        if not item:
+            continue
+        low = item.lower()
+        if "_hair" in low and has_hair:
+            continue
+        if "_eyes" in low and has_eyes:
+            continue
+        if low in norm or low.replace("_", " ") in norm:
+            continue
+        missing.append(item)
+    return missing
+
+
 class CharacterTagValidator:
     """Runtime Danbooru verification for character tags in generated prompts."""
 
@@ -317,7 +347,7 @@ class CharacterTagValidator:
                         anchors = await _fetch_anchor_tags(canonical, client)
                         if not anchors:
                             continue
-                        missing = [a for a in anchors if a.lower() not in new_prompt.lower()]
+                        missing = _missing_appearance_anchors(new_prompt, anchors)
                         if missing:
                             new_prompt = f"{new_prompt}, {', '.join(missing)}"
                             logger.info(

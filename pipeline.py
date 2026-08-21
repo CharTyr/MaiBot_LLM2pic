@@ -153,29 +153,16 @@ def _resolve_i2i_params(
     llm_noise = getattr(prompt_result, "i2i_noise", None)
     llm_neg = list(getattr(prompt_result, "negative_tags", None) or [])
 
-    strength = float(llm_strength) if llm_strength is not None else base_strength
-    noise = float(llm_noise) if llm_noise is not None else base_noise
-    source_parts = []
+    # LLM 填了用 LLM，没填用配置。不用用户文本关键词抬/压 strength。
+    _ = user_request
     if llm_strength is not None:
-        source_parts.append("llm")
+        strength = float(llm_strength)
+        source_parts = ["llm"]
     else:
-        source_parts.append("config")
-
-    req = str(user_request or "")
+        strength = base_strength
+        source_parts = ["config"]
+    noise = float(llm_noise) if llm_noise is not None else base_noise
     extra_neg = list(llm_neg)
-    if _REMOVE_ELEMENT_RE.search(req):
-        for tag in _DIALOG_NEGATIVE:
-            if tag not in {t.lower() for t in extra_neg}:
-                extra_neg.append(tag)
-        # 明确要删原图元素时，抬高 strength，避免 i2i 把对话框结构抄过来
-        if strength < 0.82:
-            strength = 0.85
-            source_parts.append("remove_boost")
-        if noise < 0.05:
-            noise = 0.08
-    if _POSE_KEEP_RE.search(req) and strength > 0.65:
-        strength = 0.6
-        source_parts.append("pose_keep")
 
     strength = max(0.35, min(0.95, strength))
     noise = max(0.0, min(0.3, noise))
@@ -333,6 +320,17 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
                 except Exception as exc:
                     logger.warning("[Pipeline] WD14 反推异常: %s", exc, exc_info=True)
 
+        # ── 3. 预先探查目标后端类型（NAI 4.5 走自然语言，其他后端走 Danbooru Tag）──
+        probe_style_router = StyleRouter(ctx.config)
+        _, probe_model_cfg, _ = probe_style_router.route(
+            selfie_mode=ctx.selfie_mode,
+            manual_style=ctx.manual_style,
+        )
+        target_api_type = str((probe_model_cfg or {}).get("api_type", "newapi_nai") or "newapi_nai").lower().replace("-", "_")
+        _ref_probe = str(ctx.ref_mode or "").strip().lower().replace("-", "_")
+        if _ref_probe in {"i2i", "char_ref", "vibe"}:
+            target_api_type = "newapi_nai"
+
         # ── 3. Prompt 生成 ──
         prompt_result = await ctx.proxy._generate_prompt_with_style(
             user_request=ctx.user_request or "根据聊天内容生成一张合适的图片",
@@ -343,6 +341,7 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
             custom_system_prompt=ctx.custom_system_prompt,
             reference_tags=reference_tags,
             reference_image_base64=reference_image_for_llm,
+            api_type=target_api_type,
         )
         if not prompt_result.success:
             await _safe_send(ctx, f"提示词生成失败: {prompt_result.error[:80]}")
@@ -357,8 +356,51 @@ async def run_draw_pipeline(ctx: DrawPipelineContext) -> bool:
             manual_style=ctx.manual_style,
             llm_style=prompt_result.style,
         )
-        api_type = str((model_config or {}).get("api_type", "openai") or "openai").lower()
+        api_type = str((model_config or {}).get("api_type", "openai") or "openai").lower().replace("-", "_")
         logger.info(f"[Pipeline] style={selected_style}, api_type={api_type}, model_config_keys={list(model_config.keys()) if model_config else None}")
+
+        # SD API / legacy 端点只支持文生图；参考图模式自动切到 NewAPI NAI 原生客户端。
+        # 普通文生图仍保留原来的 SD API 路由，不改全局默认后端。
+        reference_mode = str(ctx.ref_mode or "").strip().lower().replace("-", "_")
+        if reference_mode in {"i2i", "char_ref", "vibe"} and api_type != "newapi_nai":
+            style_config = ctx.config.get(selected_style, {}) if isinstance(ctx.config, dict) else {}
+            nai_config = style_config.get("newapi_nai", {}) if isinstance(style_config, dict) else {}
+            if not isinstance(nai_config, dict) or not nai_config.get("base_url") or not nai_config.get("api_key"):
+                logger.warning(
+                    "[Pipeline] 参考图模式缺少 NewAPI NAI 配置: ref_mode=%s style=%s",
+                    reference_mode,
+                    selected_style,
+                )
+                await _safe_send(
+                    ctx,
+                    f"{reference_mode} 需要 NewAPI NAI 参考图端点，但当前风格没有配置。普通文生图仍可使用。",
+                )
+                return False
+
+            routed_config = dict(model_config or {})
+            routed_config.update({
+                "api_type": "newapi_nai",
+                "base_url": str(nai_config.get("base_url") or ""),
+                "api_key": str(nai_config.get("api_key") or ""),
+                "api_key_paid": str(nai_config.get("api_key_paid") or ""),
+                "model_name": str(nai_config.get("model_name") or "nai-diffusion-4-5-full"),
+                "custom_prompt_add": str(nai_config.get("custom_prompt_add") or ""),
+            })
+            for endpoint_key in (
+                "negative_prompt", "size", "steps", "scale", "sampler", "seed",
+                "image_format", "max_tokens", "timeout", "retry_attempts", "proxy_mode",
+                "quality_toggle", "auto_smea", "variety_boost", "extra_params",
+            ):
+                if endpoint_key in nai_config:
+                    routed_config[f"newapi_nai_{endpoint_key}"] = nai_config[endpoint_key]
+            model_config = routed_config
+            api_type = "newapi_nai"
+            logger.info(
+                "[Pipeline] 参考图模式自动切换 NewAPI NAI: ref_mode=%s style=%s model=%s",
+                reference_mode,
+                selected_style,
+                routed_config.get("model_name"),
+            )
 
         # ── 5. 确定目标尺寸 ──
         # prompt_result.aspect 只是 LLM 建议；最终由用户意图、场景 tag、

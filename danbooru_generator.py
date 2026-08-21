@@ -10,7 +10,12 @@ import re
 
 from src.common.logger import get_logger
 
-from .core.rules.prompt_rules import PROMPT_GENERATOR_JSON_TEMPLATE, SFW_PROMPT_GENERATOR_JSON_TEMPLATE
+from .core.rules.prompt_rules import (
+    PROMPT_GENERATOR_JSON_TEMPLATE,
+    SFW_PROMPT_GENERATOR_JSON_TEMPLATE,
+    NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE,
+    SFW_NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE,
+)
 from .core.services.tag_candidate_resolver import resolve_tag_candidates
 from .core.services.character_tag_validator import get_character_tag_validator
 from .core.utils.prompt_output_parser import (
@@ -325,11 +330,21 @@ async def generate_danbooru_prompt(
     custom_system_prompt: str = "",
     reference_tags: str = "",
     reference_image_base64: str = "",
+    api_type: str = "newapi_nai",
 ) -> PromptGenerationResult:
-    """Generate Danbooru tags using the vendored nai_draw_plugin-style pipeline."""
+    """Generate Danbooru tags or NAI 4.5 Natural Language Caption based on backend."""
     llm_config = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
     sfw_mode = bool(llm_config.get("danbooru_sfw_mode", True)) and not nsfw_allowed
-    template = SFW_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else PROMPT_GENERATOR_JSON_TEMPLATE
+
+    normalized_api = str(api_type or "").strip().lower().replace("-", "_")
+    is_nai = normalized_api in ("newapi_nai", "nai")
+    prompt_mode = str(llm_config.get("prompt_mode", "auto") or "auto").strip().lower()
+    use_caption = (prompt_mode == "caption") or (prompt_mode == "auto" and is_nai)
+
+    if use_caption:
+        template = SFW_NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else NAI_CAPTION_PROMPT_GENERATOR_JSON_TEMPLATE
+    else:
+        template = SFW_PROMPT_GENERATOR_JSON_TEMPLATE if sfw_mode else PROMPT_GENERATOR_JSON_TEMPLATE
     retriever_config = config.get("tag_retriever")
     tag_candidates = await resolve_tag_candidates(
         retriever_config if isinstance(retriever_config, dict) else {},

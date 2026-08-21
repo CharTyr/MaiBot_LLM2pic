@@ -4,7 +4,28 @@ from typing import Any
 
 from src.common.data_models.llm_service_data_models import LLMGenerationOptions, LLMImageOptions
 from src.services.embedding_service import EmbeddingServiceClient
-from src.services.llm_service import LLMServiceClient, resolve_task_name, resolve_task_name_from_model_config
+from src.services.llm_service import LLMServiceClient, resolve_task_name
+
+
+def _resolve_task_name_from_model_config(model_config: Any, preferred_task_name: str = "") -> str:
+    """上游 2026-08 移除了 llm_service.resolve_task_name_from_model_config；插件内本地兜底。"""
+    preferred = str(preferred_task_name or "").strip()
+    if preferred:
+        try:
+            return resolve_task_name(preferred)
+        except Exception:
+            pass
+
+    # 旧 TaskConfig / 伪配置对象上常见字段
+    for attr in ("task_name", "name", "model_task_name"):
+        value = getattr(model_config, attr, None)
+        if isinstance(value, str) and value.strip():
+            try:
+                return resolve_task_name(value.strip())
+            except Exception:
+                continue
+
+    return resolve_task_name("")
 
 
 class LegacyLLMRequest:
@@ -17,7 +38,7 @@ class LegacyLLMRequest:
     def _resolve_task_name(self, preferred_task_name: str = "") -> str:
         if self.model_set is not None:
             try:
-                return resolve_task_name_from_model_config(
+                return _resolve_task_name_from_model_config(
                     self.model_set,
                     preferred_task_name=preferred_task_name,
                 )
@@ -31,6 +52,7 @@ class LegacyLLMRequest:
                 pass
 
         return resolve_task_name("")
+
 
     async def generate_response_async(
         self,

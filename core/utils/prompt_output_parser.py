@@ -83,7 +83,7 @@ def parse_structured_prompt_payload(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     candidates = [cleaned]
-    if any(token in cleaned for token in ('"prompt"', '"global"', '"people"')):
+    if any(token in cleaned for token in ('"prompt"', '"global"', '"people"', '"caption"')):
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -100,19 +100,44 @@ def parse_structured_prompt_payload(text: str) -> Optional[Dict[str, Any]]:
 
         version = obj.get("version")
         has_v2_fields = isinstance(obj.get("global"), list)
-        has_v1_prompt = isinstance(obj.get("prompt"), str) and obj.get("prompt", "").strip()
-        if version == 2 or version == 3 or (isinstance(version, int) and version >= 2):
-            if has_v2_fields or has_v1_prompt:
+        has_v1_prompt = isinstance(obj.get("prompt"), str) and bool(str(obj.get("prompt", "")).strip())
+        has_caption = isinstance(obj.get("caption"), str) and bool(str(obj.get("caption", "")).strip())
+        if version == 2 or version == 3 or version == 4 or (isinstance(version, int) and version >= 2):
+            if has_v2_fields or has_v1_prompt or has_caption:
                 return obj
             continue
 
-        if has_v1_prompt:
+        if has_v1_prompt or has_caption:
             return obj
 
     return None
 
 
 def _render_from_v2(obj: dict) -> Optional[str]:
+    # NAI 4.5 Natural Language Caption format (version=4 or format="caption")
+    caption = obj.get("caption")
+    if isinstance(caption, str) and caption.strip():
+        caption_text = caption.strip()
+        characters = obj.get("characters") or obj.get("character_anchors") or []
+        char_strs: list[str] = []
+        if isinstance(characters, list):
+            for c in characters:
+                if isinstance(c, str) and c.strip():
+                    char_strs.append(c.strip().strip(" ,."))
+                elif isinstance(c, list):
+                    joined = _join_tags(c)
+                    if joined:
+                        char_strs.append(joined)
+        elif isinstance(characters, str) and characters.strip():
+            char_strs.append(characters.strip().strip(" ,."))
+
+        if char_strs:
+            cap_lower = caption_text.lower()
+            missing_chars = [c for c in char_strs if c.lower() not in cap_lower]
+            if missing_chars:
+                return f"{caption_text}, {', '.join(missing_chars)}"
+        return caption_text
+
     global_tags = obj.get("global")
     if not isinstance(global_tags, list):
         return None
